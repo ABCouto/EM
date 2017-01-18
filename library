@@ -1,0 +1,3498 @@
+# -*- coding: utf-8 -*-
+## Common libraries needed to run CCI datasets evaluation scripts
+# abc.. 
+
+######################### Python packages ######################################
+from __future__ import generators
+from __future__ import division
+
+## If in CO.MARE
+#import sys
+#sys.path.append('/home/adcouto/Enthought/Canopy_64bit/User/lib/python2.7/site-packages/') # show sytem python where canopy pyhdf is
+
+from datetime import datetime, timedelta# to time things
+import os;import glob# import module os and glob
+import numpy as np
+#import numpy.ma as ma
+from scipy import stats,signal,interpolate,ndimage,optimize
+from time import time # to time operation
+import matplotlib
+from numpy import zeros, NaN, linalg
+import bisect
+import pylab as pl
+import psutil
+from matplotlib import gridspec
+
+from mpl_toolkits.basemap import Basemap, shiftgrid
+import mpl_toolkits.basemap.pyproj as pyproj
+from netCDF4 import Dataset
+from lmfit import minimize, Parameters, Parameter
+from pyhdf.SD import SD, SDC
+
+
+execfile('python/scripts/compare_datasets_1_binned.py')
+execfile('python/scripts/curvefit_SM_pro.py')
+
+
+
+######################### functions made by me! ################################
+
+def Chl_a_specific_absorption_coeffcient(wave_lengths, interpolation_type = 'cubic'):
+    # returns the chlorophyll-a specific absorption coeeficients at different wavelengths
+    # values from Maritorena (2002), table Table 2 and Figure 3, and his IDL script gsm_main.pro (see gsm_main_pro.py)
+    # Maritorena S., D.A. Siegel & A. Peterson. 2002. Optimization of a Semi-Analytical Ocean Color Model for Global Scale Applications. Applied Optics. 41(15): 2705-2714
+    # 
+    # interpolation_type can be the same as in scipy.interpolate.interp1d, e.g., '' = (linear), 'cubic'
+    # 
+    #wave_lengths = [412.0, 443.0, 490.0, 510.0, 555.0, 670.0, 750.0]
+    #
+    
+    wave_lengths = np.array(wave_lengths)
+    table_wave_lengths = np.array([412.0, 443.0, 490.0, 510.0, 555.0, 670.0, 710, 800])
+    table_aph_star = np.array([0.00665, 0.05582, 0.02055, 0.01910, 0.01015, 0.01424, 0.0, 0.0])# values from Maritorena et al. (2002)
+    
+    f = interpolate.interp1d(table_wave_lengths, table_aph_star, kind = interpolation_type)
+    aph_star = f(wave_lengths)
+    aph_star [aph_star<0] = 0# no negative values for the absorption coefficient 
+    #pl.figure();pl.grid('on');pl.plot(linspace(table_wave_lengths[0],table_wave_lengths[-1],100),f(linspace(table_wave_lengths[0],table_wave_lengths[-1],100)),'-b')
+    #pl.plot(table_wave_lengths,table_aph_star,'ok'); pl.plot(wave_lengths,aph_star,'xr')
+        
+    return aph_star
+
+
+def sea_water_absorption_coef(wave_lengths, interpolation_type = 'cubic'):
+    # returns the sea water absorption coefficients at different wavelengths
+    # as published by 
+    # Pope and Fry (1997), between 380-700 nm
+    # Kou et al (1993), between 650-2500 nm
+    #
+    # references:
+    # Robin M. Pope and Edward S. Fry, "Absorption spectrum (380\u2013700 nm) of pure water. II. Integrating cavity measurements," Appl. Opt. 36, 8710-8723 (1997) 
+    # Kou L., Labrie D., Chýlek P. (1993). "Refractive indices of water and ice the 0.65- to 2.5-µm spectral range.". Applied Optics (Optical Society of America) 32 (19): 3531\u20133540. Bibcode:1993ApOpt..32.3531K. doi:10.1364/AO.32.003531.
+    #
+    # Experimental data
+    # wave_lengths = [412.0, 443.0, 490.0, 510.0, 555.0, 670.0, 789.]
+    # interpolation_type = 'cubic'
+    
+    wave_lengths = np.array(wave_lengths)
+    
+    ## Making  Pope and Fry absorption table
+    ########################################
+    table_wave_lengths_PF = np.arange(380, 730, 2.5) 
+    table_absorption_PF = np.array([.01137, .01044, .00941, .00917, .00851, .00829, .00813, .00775, .00663, .00579, 
+                                     .00530, .00503, .00473, .00452, .00444, .00442, .00454, .00474, .00478, .00482, 
+                                     .00495, .00504, .00530, .00580, .00635, .00696, .00751, .00830, .00922, .00969, 
+                                     .00962, .00957, .00979, .01005, .01011, 
+                                     .0102, .0106, .0109, .0114, .0121, .0127, .0131, .0136, .0144, .0150, 
+                                     .0162, .0173, .0191, .0204, .0228, .0256, .0280, .0325, .0372, .0396, 
+                                     .0399, .0409, .0416, .0417, .0428, .0434, .0447, .0452, .0466, .0474, 
+                                     .0489, .0511, .0537, .0565, .0593, .0596, .0606, .0619, .0640, .0642, 
+                                     .0672, .0695, .0733, .0772, .0836, .0896, .0989, .1100, .1220, .1351, 
+                                     .1516, .1672, .1925, .2224, .2470, .2577, .2629, .2644, .2665, .2678, 
+                                     .2707, .2755, .2810, .2834, .2904, .2916, .2995, .3012, .3077, .3108, 
+                                     .322, .325, .335, .340, .358, .371, .393, .410, .424, .429, 
+                                     .436, .439, .448, .448, .461, .465, .478, .486, .502, .516, 
+                                     .538, .559, .592, .624, .663, .704, .756, .827, .914, 
+                                     1.007, 1.119, 1.231, 1.356, 1.489, 1.678])# last number invented
+    
+    
+    ## Making  Kou et al. (1993) absorption table
+    #############################################
+    #import xlrd
+    #workbook = xlrd.open_workbook('python/results/GSM_implementation/Kou_et_al_1993_AO.xlsx')
+    #table_wave_lengths_K = []
+    #table_absorption_K = []
+    #for n in xrange(0,workbook.sheet_by_name('Sheet1').nrows):# print n
+    #    table_wave_lengths_K.append(workbook.sheet_by_name('Sheet1').cell_value(n,0))
+    #    table_absorption_K.append(workbook.sheet_by_name('Sheet1').cell_value(n,1))
+    #table_wave_lengths_K = np.array(table_wave_lengths_K); table_absorption_K = np.array(table_absorption_K)*100
+    table_wave_lengths_K = np.array([2500., 2487., 2475., 2463., 2451., 2439., 2427., 2415., 2403., 2392., 2381., 2369., 2358., 2347.,
+         2336., 2325., 2314., 2304., 2293., 2283., 2272., 2262., 2252., 2242., 2232., 2222., 2212., 2202., 2193., 2183., 2173., 2164., 
+         2155., 2145., 2136., 2127., 2118., 2109., 2100., 2092., 2083., 2074., 2066., 2057., 2050., 2040., 2032., 2024., 2016., 2008., 
+         2000., 1992., 1984., 1976., 1968., 1960., 1953., 1945., 1940., 1930., 1923., 1920., 1908., 1901., 1894., 1890., 1879., 1872.,
+         1865., 1860., 1851., 1845., 1838., 1831., 1824., 1818., 1810., 1805., 1798., 1792., 1785., 1779., 1773., 1770., 1760., 1754., 
+         1748., 1742., 1740., 1730., 1724., 1718., 1710., 1706., 1700., 1690., 1689., 1683., 1677., 1672., 1666., 1661., 1655., 1650., 
+         1644., 1640., 1634., 1628., 1623., 1618., 1612., 1607., 1602., 1597., 1592., 1587., 1582., 1577., 1572., 1567., 1562., 1557., 
+         1552., 1548., 1543., 1538., 1533., 1529., 1524., 1519., 1515., 1510., 1506., 1501., 1497., 1492., 1488., 1484., 1479., 1474.,
+         1470., 1466., 1462., 1457., 1453., 1449., 1445., 1440., 1437., 1432., 1428., 1424., 1420., 1416., 1412., 1408., 1404., 1400., 
+         1396., 1392., 1388., 1385., 1381., 1377., 1373., 1369., 1366., 1362., 1358., 1355., 1351., 1347., 1344., 1340., 1336., 1333., 
+         1329., 1326., 1322., 1319., 1315., 1312., 1308., 1305., 1302., 1298., 1295., 1292., 1288., 1285., 1282., 1278., 1275., 1272., 
+         1269., 1265., 1262., 1259., 1256., 1253., 1250., 1246., 1243., 1240., 1237., 1234., 1231., 1228., 1225., 1222., 1219., 1216., 
+         1213., 1210., 1207., 1204., 1201., 1199., 1196., 1193., 1190., 1187., 1184., 1182., 1179., 1176., 1173., 1171., 1168., 1165., 
+         1162., 1160., 1157., 1154., 1152., 1149., 1146., 1144., 1141., 1139., 1136., 1133., 1131., 1128., 1126., 1123., 1121., 1118., 
+         1116., 1113., 1111., 1108., 1106., 1103., 1101., 1098., 1096., 1094., 1091., 1089., 1087., 1084., 1082., 1080., 1077., 1075.,
+         1073., 1070., 1068., 1066., 1063., 1061., 1059., 1057., 1054., 1052., 1050., 1048., 1046., 1043., 1041., 1039., 1037., 1035., 
+         1033., 1030., 1028., 1026., 1024., 1022., 1020., 1018., 1016., 1014., 1012., 1010., 1008., 1006., 1004., 1002., 1000., 998., 
+         996., 994., 992., 990., 988., 986., 984., 982., 980., 978., 976., 974., 973., 971., 969., 967., 965., 963., 961., 960., 958., 
+         956., 954., 952., 950., 949., 947., 945., 943., 941., 940., 938., 936., 935., 933., 931., 929., 928., 926., 924., 922., 921., 
+         919., 917., 916., 914., 912., 911., 909., 907., 906., 904., 902., 901., 899., 898., 896., 895., 893., 891., 890., 888., 887., 
+         885., 883., 882., 880., 879., 877., 876., 874., 873., 871., 870., 868., 866., 865., 864., 862., 861., 859., 858., 856., 855., 
+         853., 851., 850., 849., 848., 846., 845., 843., 842., 840., 839., 838., 836., 835., 833., 832., 831., 829., 828., 826., 825., 
+         824., 822., 821., 820., 818., 817., 816., 814., 813., 812., 810., 809., 808., 807., 805., 804., 803., 801., 800., 799., 797., 
+         796., 795., 794., 792., 791., 790., 789., 787., 786., 785., 784., 783., 781., 780., 779., 778., 776., 775., 774., 773., 772., 
+         770., 769., 768., 767., 766., 765., 763., 762., 761., 760., 759., 758., 756., 755., 754., 753., 752., 751., 750., 748., 747., 
+         746., 745., 744., 743., 742., 741., 740., 739., 738., 736., 735., 734., 733., 732., 731., 730., 729., 728., 727., 726., 725., 
+         724., 723., 722., 721., 719., 718., 717., 716., 715., 714., 713., 712., 711., 710., 709., 708., 707., 706., 705., 704., 703., 
+         702., 701., 700., 699., 698., 697., 696., 695., 694., 693., 692., 691., 690., 689.7, 689., 688., 687., 686., 685., 684., 683., 
+         682., 681., 680., 679., 678., 677., 676., 676., 675., 674., 673., 672., 671., 670., 669., 668., 667., 667. ])
+    table_absorption_K = np.array([1.00530960e+04, 9.44877840e+03, 8.68221930e+03, 7.95921120e+03, 7.17785310e+03, 6.54337430e+03,6.05795340e+03, 5.56770840e+03, 
+         5.14577950e+03, 4.75441670e+03, 4.40693780e+03, 4.08446810e+03, 3.78909630e+03, 3.61410300e+03, 3.26531960e+03, 3.04835810e+03, 2.84562570e+03, 2.66708110e+03,
+         2.52094640e+03, 2.38887630e+03, 2.27876080e+03, 2.19439260e+03, 2.12043540e+03, 2.07384340e+03, 2.03809410e+03, 2.01333380e+03, 2.00539270e+03, 2.01449980e+03, 
+         2.02849750e+03, 2.06657210e+03, 2.10499710e+03, 2.16601480e+03, 2.23337340e+03, 2.31994520e+03, 2.42973350e+03, 2.55226700e+03, 2.69364120e+03, 2.87231310e+03, 
+         3.04584870e+03, 3.26172990e+03, 3.49903730e+03, 3.75658120e+03, 4.04483840e+03, 4.39853500e+03, 4.76528530e+03, 5.11894780e+03, 5.54107650e+03, 6.01621170e+03,
+         6.54498440e+03, 7.07171220e+03, 7.72831750e+03, 8.39019680e+03, 9.12075240e+03, 9.92081840e+03, 1.07273890e+04, 1.15405439e+04, 1.23540350e+04, 1.30509344e+04, 
+         1.35010587e+04, 1.36732523e+04, 1.34616340e+04, 1.28616633e+04, 1.17233431e+04, 9.84949570e+03, 7.29831420e+03, 4.86805320e+03, 3.17670340e+03, 2.15481020e+03, 
+         1.57669200e+03, 1.27827980e+03, 1.11338990e+03, 1.00803400e+03, 9.70851200e+02, 9.40247200e+02, 9.23187300e+02, 9.19321900e+02, 9.15936400e+02, 9.25943100e+02,
+         9.15569800e+02, 9.18635300e+02, 9.15197800e+02, 8.97093300e+02, 8.71778600e+02, 8.39655500e+02, 7.92538100e+02, 7.59427100e+02, 7.26088900e+02, 6.91799600e+02, 
+         6.65235800e+02, 6.44298900e+02, 6.27589600e+02, 6.13689400e+02, 6.01159900e+02, 5.92225200e+02, 5.89141000e+02, 5.85293100e+02, 5.83305700e+02, 5.83891900e+02, 
+         5.83733000e+02, 5.87733300e+02, 5.92112900e+02, 5.98434600e+02, 6.05159900e+02, 6.16132900e+02, 6.26789700e+02, 6.35602200e+02, 6.49083000e+02, 6.66141100e+02,
+         6.80581600e+02, 6.98994600e+02, 7.19526000e+02, 7.38186300e+02, 7.60885100e+02, 7.86873500e+02, 8.13025200e+02, 8.47260000e+02, 8.81711200e+02, 9.16380800e+02, 
+         9.51271000e+02, 9.94403200e+02, 1.04585670e+03, 1.09764050e+03, 1.16595190e+03, 1.21767150e+03, 1.27862610e+03, 1.38083000e+03, 1.45910880e+03, 1.53689420e+03, 
+         1.60790170e+03, 1.70419500e+03, 1.80823010e+03, 1.92240490e+03, 2.04432980e+03, 2.15997570e+03, 2.29166270e+03, 2.40883500e+03, 2.57576800e+03, 2.69279360e+03,
+         2.82084840e+03, 2.96682280e+03, 3.06038130e+03, 3.15445030e+03, 3.24043880e+03, 3.26880870e+03, 3.27780750e+03, 3.26951100e+03, 3.25247220e+03, 3.22013230e+03, 
+         3.20062030e+03, 3.10649090e+03, 3.02719280e+03, 2.91215040e+03, 2.76991110e+03, 2.63574290e+03, 2.46521560e+03, 2.23124470e+03, 1.96908930e+03, 1.69645990e+03, 
+         1.39526310e+03, 1.10136290e+03, 8.78197300e+02, 7.20411400e+02, 5.98745200e+02, 5.18351400e+02, 4.64031300e+02, 4.22244700e+02, 3.95573900e+02, 3.72747000e+02,
+         3.55337700e+02, 3.39431100e+02, 3.23693300e+02, 3.09727900e+02, 2.88914300e+02, 2.70083200e+02, 2.53961100e+02, 2.35678400e+02, 2.20313300e+02, 2.04701000e+02, 
+         1.91062100e+02, 1.79111300e+02, 1.67233100e+02, 1.58037400e+02, 1.48913400e+02, 1.41552200e+02, 1.35122300e+02, 1.29729900e+02, 1.25178500e+02, 1.21578700e+02, 
+         1.18053600e+02, 1.16373400e+02, 1.13705100e+02, 1.11111100e+02, 1.10386900e+02, 1.08671400e+02, 1.07938100e+02, 1.08279400e+02, 1.08536800e+02, 1.09793500e+02,
+         1.10055800e+02, 1.10319300e+02, 1.11589400e+02, 1.12956100e+02, 1.14239700e+02, 1.15529500e+02, 1.15809700e+02, 1.17109600e+02, 1.18415800e+02, 1.19728400e+02, 
+         1.20021700e+02, 1.21344700e+02, 1.21643300e+02, 1.24010200e+02, 1.24316900e+02, 1.25663700e+02, 1.25976000e+02, 1.27333600e+02, 1.26605400e+02, 1.27864600e+02, 
+         1.28185400e+02, 1.27454400e+02, 1.26719700e+02, 1.25981300e+02, 1.25239200e+02, 1.24387900e+02, 1.23638600e+02, 1.22885400e+02, 1.23199700e+02, 1.21263900e+02,
+         1.20499400e+02, 1.19731100e+02, 1.18958800e+02, 1.16997200e+02, 1.14042300e+02, 1.09983000e+02, 1.04065300e+02, 9.49313000e+01, 8.59689000e+01, 7.53543000e+01, 
+         6.51997000e+01, 5.57157000e+01, 4.71239000e+01, 4.03721000e+01, 3.53325000e+01, 3.16387000e+01, 2.89049000e+01, 2.71917000e+01, 2.57829000e+01, 2.45033000e+01, 
+         2.35338000e+01, 2.33714000e+01, 2.25086000e+01, 2.16622000e+01, 2.07925000e+01, 2.00515000e+01, 1.92890000e+01, 1.86550000e+01, 1.77718000e+01, 1.71151000e+01,
+         1.65862000e+01, 1.60397000e+01, 1.56068000e+01, 1.51863000e+01, 1.47498000e+01, 1.44281000e+01, 1.43516000e+01, 1.41445000e+01, 1.40537000e+01, 1.40931000e+01, 
+         1.41195000e+01, 1.42639000e+01, 1.44224000e+01, 1.45680000e+01, 1.49515000e+01, 1.52176000e+01, 1.56185000e+01, 1.61260000e+01, 1.66355000e+01, 1.71469000e+01, 
+         1.79005000e+01, 1.86749000e+01, 1.94350000e+01, 2.01981000e+01, 2.10853000e+01, 2.19760000e+01, 2.29917000e+01, 2.39127000e+01, 2.50594000e+01, 2.62106000e+01,
+         2.72435000e+01, 2.84034000e+01, 2.95679000e+01, 3.08604000e+01, 3.19107000e+01, 3.29650000e+01, 3.40236000e+01, 3.52107000e+01, 3.64026000e+01, 3.75992000e+01, 
+         3.86754000e+01, 3.96305000e+01, 4.07150000e+01, 4.16780000e+01, 4.26449000e+01, 4.36157000e+01, 4.43370000e+01, 4.53151000e+01, 4.60428000e+01, 4.67734000e+01, 
+         4.73793000e+01, 4.78597000e+01, 4.82138000e+01, 4.85694000e+01, 4.86689000e+01, 4.86399000e+01, 4.84315000e+01, 4.81430000e+01, 4.78534000e+01, 4.75625000e+01,
+         4.70099000e+01, 4.63246000e+01, 4.53749000e+01, 4.38514000e+01, 4.18442000e+01, 3.93028000e+01, 3.62238000e+01, 3.27359000e+01, 2.97625000e+01, 2.70131000e+01, 
+         2.46816000e+01, 2.28721000e+01, 2.10550000e+01, 1.96308000e+01, 1.81811000e+01, 1.68802000e+01, 1.55737000e+01, 1.46496000e+01, 1.37382000e+01, 1.28093000e+01, 
+         1.19441000e+01, 1.11310000e+01, 1.04222000e+01, 9.81920000e+00, 9.26800000e+00, 8.80060000e+00, 8.40950000e+00, 8.08520000e+00, 7.79220000e+00, 7.56180000e+00,
+         7.35790000e+00, 7.18670000e+00, 7.03660000e+00, 6.89970000e+00, 6.76860000e+00, 6.67240000e+00, 6.56180000e+00, 6.45750000e+00, 6.36010000e+00, 6.26920000e+00, 
+         6.18500000e+00, 6.09360000e+00, 6.00880000e+00, 5.92350000e+00, 5.83140000e+00, 5.74540000e+00, 5.65270000e+00, 5.56610000e+00, 5.46490000e+00, 5.38560000e+00, 
+         5.29790000e+00, 5.20380000e+00, 5.11540000e+00, 5.04950000e+00, 4.96040000e+00, 4.89410000e+00, 4.83320000e+00, 4.75210000e+00, 4.70520000e+00, 4.65800000e+00,
+         4.60520000e+00, 4.55240000e+00, 4.50470000e+00, 4.46610000e+00, 4.43260000e+00, 4.37920000e+00, 4.36010000e+00, 4.30640000e+00, 4.27230000e+00, 4.22320000e+00, 
+         4.19860000e+00, 4.20360000e+00, 4.14930000e+00, 4.11450000e+00, 4.07480000e+00, 4.03970000e+00, 3.99970000e+00, 3.94940000e+00, 3.90920000e+00, 3.85390000e+00, 
+         3.78790000e+00, 3.70220000e+00, 3.60550000e+00, 3.45880000e+00, 3.29660000e+00, 3.10750000e+00, 2.91390000e+00, 2.76890000e+00, 2.61990000e+00, 2.51630000e+00,
+         2.44600000e+00, 2.38780000e+00, 2.32940000e+00, 2.30430000e+00, 2.27640000e+00, 2.24840000e+00, 2.22300000e+00, 2.21030000e+00, 2.19760000e+00, 2.18750000e+00, 
+         2.19020000e+00, 2.17730000e+00, 2.19560000e+00, 2.20110000e+00, 2.20380000e+00, 2.22220000e+00, 2.24340000e+00, 2.24620000e+00, 2.28050000e+00, 2.31780000e+00, 
+         2.33650000e+00, 2.35520000e+00, 2.37400000e+00, 2.41170000e+00, 2.44650000e+00, 2.46560000e+00, 2.50050000e+00, 2.52290000e+00, 2.55800000e+00, 2.59330000e+00,
+         2.61270000e+00, 2.63200000e+00, 2.65490000e+00, 2.69050000e+00, 2.71010000e+00, 2.72970000e+00, 2.75290000e+00, 2.75650000e+00, 2.77630000e+00, 2.77990000e+00, 
+         2.79980000e+00, 2.82340000e+00, 2.82700000e+00, 2.83070000e+00, 2.83440000e+00, 2.85450000e+00, 2.85820000e+00, 2.86570000e+00, 2.86950000e+00, 2.87330000e+00, 
+         2.86050000e+00, 2.86430000e+00, 2.86810000e+00, 2.87560000e+00, 2.87940000e+00, 2.86660000e+00, 2.87040000e+00, 2.85750000e+00, 2.86130000e+00, 2.84840000e+00,
+         2.85600000e+00, 2.84300000e+00, 2.84680000e+00, 2.83380000e+00, 2.83760000e+00, 2.82450000e+00, 2.81130000e+00, 2.79820000e+00, 2.76800000e+00, 2.73770000e+00, 
+         2.67330000e+00, 2.61230000e+00, 2.53040000e+00, 2.44820000e+00, 2.31440000e+00, 2.19740000e+00, 2.08010000e+00, 1.96240000e+00, 1.84440000e+00, 1.76070000e+00, 
+         1.66460000e+00, 1.59240000e+00, 1.52530000e+00, 1.46670000e+00, 1.40610000e+00, 1.34890000e+00, 1.29500000e+00, 1.24270000e+00, 1.19010000e+00, 1.14100000e+00,
+         1.09520000e+00, 1.04920000e+00, 1.00670000e+00, 9.69400000e-01, 9.30100000e-01, 8.97900000e-01, 8.65500000e-01, 8.40100000e-01, 8.14700000e-01, 7.92700000e-01, 
+         7.72500000e-01, 7.52200000e-01, 7.35400000e-01, 7.15000000e-01, 6.98100000e-01, 6.83000000e-01, 6.67800000e-01, 6.52600000e-01, 6.39100000e-01, 6.25600000e-01, 
+         6.13900000e-01, 6.02100000e-01, 5.92100000e-01, 5.80300000e-01, 5.72000000e-01, 5.63800000e-01, 5.53600000e-01, 5.43000000e-01, 5.36200000e-01, 5.31500000e-01,
+         5.25000000e-01, 5.20200000e-01, 5.17300000e-01, 5.12600000e-01, 5.07800000e-01, 5.03000000e-01, 5.03800000e-01, 5.00800000e-01, 4.97800000e-01, 4.93000000e-01, 
+         4.90000000e-01, 4.90800000e-01, 4.85200000e-01, 4.85900000e-01, 4.81000000e-01, 4.78000000e-01, 4.76800000e-01, 4.75700000e-01, 4.74500000e-01, 4.73400000e-01, 
+         4.66500000e-01, 4.67200000e-01, 4.65400000e-01])
+    #pl.figure();pl.grid('on');plot(table_wave_lengths_PF,table_absorption_PF,'+');plot(table_wave_lengths_K,table_absorption_K,'rx')
+
+    
+    ## Merge both absorption coefficients (when overlaying the same wave length, average)
+    #####################################
+    table_wave_lengths = np.concatenate((table_wave_lengths_PF, table_wave_lengths_K),axis = 0)
+    table_absorption = np.concatenate((table_absorption_PF, table_absorption_K),axis = 0)
+    
+    # find wavelength duplicates and average them
+    #############################################
+    import collections
+    y=collections.Counter(table_wave_lengths)
+    duplicates = [i for i in y if y[i]>1] # duplicate elements 
+    for dup in duplicates:# dup = duplicates[0]               # average duplicates
+        table_absorption[table_wave_lengths == dup] = mean(table_absorption[table_wave_lengths == dup])
+    #pl.figure();pl.grid('on');plot(table_wave_lengths,table_absorption,'+')
+    
+    ## sort arrays
+    ##############
+    yx = zip(table_wave_lengths,table_absorption);yx.sort();table_absorption = [x for y, x in yx]
+    table_wave_lengths.sort()
+    
+    ## interpolate
+    ##############
+    PF_absorption = []
+    for wl in wave_lengths:
+        #print str(wl)
+        PF_absorption.append(np.interp(wl, table_wave_lengths, table_absorption))
+    #pl.figure();pl.grid('on');pl.plot(table_wave_lengths, table_absorption); pl.plot(wave_lengths,PF_absorption,'ok')
+    
+    return np.array(PF_absorption)
+
+
+
+def Smith_and_Baker_1981_sea_water_backscatter(wave_lengths):
+    # returns the sea water backsactter values at different wavelengths
+    # as published by Smith and Baker (1981), 
+    # Smith, R.C. and Karen S. Baker (1981). Optical properties of the clearest natural waters (200\u2013800 nm), Appl. Opt., (20) 177-184.
+    # 
+    #wave_lengths = [412.0, 443.0, 490.0, 510.0, 555.0, 670.0, 710.]
+    
+    wave_lengths = np.array(wave_lengths)
+    table_wave_lengths = np.arange(200, 810, 10)
+    table_SB_scatter = np.array([.151, .1190, .0995, .0820, .0685, .0575, .0485, .0415, .0353, .0305, 
+                                    .0262, .0229, .0200, .0175, .0153, .0134, .0120, .0106, .0094, .0084, 
+                                    .0076, .0068, .0061, .0055, .0049, .0045, .0041, .0037, .0034, .0031, 
+                                    .0029, .0026, .0024, .0022, .0021, .0019, .0018, .0017, .0016, .0015, 
+                                    .0014, .0013, .0012, .0011, .0010, .0010, .0008, .0008, .0007, .0007, 
+                                    .0007, .0007, .0006, .0006, .0006, .0005, .0005, .0005, .0004, .0004, .0004])
+    SB_backscatter = []
+    for wl in wave_lengths:
+        #print str(wl)
+        SB_backscatter.append(np.interp(wl, table_wave_lengths, table_SB_scatter))
+        
+    #pl.figure();pl.grid('on');plot(table_wave_lengths,table_SB_scatter); plot(wave_lengths, SB_backscatter,'ko')
+    
+    return np.array(SB_backscatter)/2# Maritorena (email on 11.08.2015 17.26hr) says: For pure seawater, bb is half of b (scattering is isotrope for pure water).
+
+
+def GSM01_MSD (Chl, acdm_443, bbp_443, LwN_obs, model = 'maritorena'):# Maritorena 2002 eq.5 Mean Square Difference between modeled and measured LwN(\u03bb)
+    # Data
+    #LwN_obs = [0.00964288, 0.00733122, 0.00566863, 0.00352856, 0.00176867, 6.54E-05]
+    #Chl = 0.002; acdm_443 = 0.01; bbp_443 = 0.0029 # 1D
+    #Chl = 0.002; acdm_443 = np.linspace(0,2,10); bbp_443 = 0.0029 # 1 var is 2D
+    #Chl = 0.002; acdm_443 = np.linspace(0,2,5); bbp_443 = 10**np.linspace(np.log10(0.0001),np.log10(0.1),3) # 2 var are 2D
+
+    if model == 'maritorena': LwN_model = gsm01_model([Chl, acdm_443, bbp_443])[0] # also oupts the partial derivatives
+    else: LwN_model = gsm01_model_abc([Chl, acdm_443, bbp_443])
+    
+    #if len(np.shape(LwN_model)) == 2:
+    #    MSD = np.zeros(len(LwN_model))
+    #    for n_col in xrange(len((LwN_model))):
+    #        for nl in xrange(len(LwN_obs)):
+    #            MSD[n_col] += (LwN_obs[nl] - LwN_model[n_col,nl])**2
+    #
+    #elif len(np.shape(LwN_model)) == 3:
+    #    MSD = np.zeros(np.shape(LwN_model)[0] * np.shape(LwN_model)[1]).reshape(np.shape(LwN_model)[0], np.shape(LwN_model)[1])
+    #    for n_linha in xrange(np.shape(LwN_model)[0]):
+    #        for n_col in xrange(np.shape(LwN_model)[1]):
+    #            for nl in xrange(len(LwN_obs)):
+    #                MSD[n_linha, n_col] += (LwN_obs[nl] - LwN_model[n_linha, n_col,nl])**2
+    #
+    #else:
+    
+    MSD = sum((LwN_obs - LwN_model)**2)
+    
+    return MSD/len(LwN_obs)
+
+def gsm01_model_abc(guess = [ 0.002 ,  0.01  ,  0.0029], wave_lengths = [412.0, 443.0, 490.0, 510.0, 555.0, 670.0]):
+    ## follow the paper (Maritorena, 2002) instead of his the IDL pro 
+    #############################################################
+    #seawifs_wave_lengths = np.array([412.0, 443.0, 490.0, 510.0, 555.0, 670.0])
+    #
+    # Data
+    #guess = [0.002, 0.01, 0.0029] # Chl, adcm, bbp 1D
+    #guess = [0.002, np.linspace(0,2,10), 0.0029] # 1 var is 2D
+    #guess = [0.002, np.linspace(0,2,5), 10**np.linspace(np.log10(0.0001),np.log10(0.1),3)] # 2 var are 2D
+
+    Chl = np.array(guess[0]); acdm_443 = np.array(guess[1]); bbp_443 = np.array(guess[2]); wave_lengths = np.array(wave_lengths)
+    # If inputs are more than a value for one of the variables, treat them as matrices
+    if len(np.shape(Chl))>1: Chl = np.matrix(Chl).T
+    if len(np.shape(acdm_443))>1: acdm_443 = np.matrix(acdm_443).T
+    if len(np.shape(bbp_443))>1: bbp_443 = np.matrix(bbp_443).T
+    
+
+    # Lwn = tF0(\u03bb) / nw^2 * (g1 * [bb(\u03bb) / (bb(\u03bb) + a(\u03bb)) ] + g2 * [bb(\u03bb) / (bb(\u03bb) + a(\u03bb)) ]^2)
+    # Lwn - Normalized water leaving radiance \u2013 Output
+    # t - the sea\u2013air transmission factor \u2013 ?
+    # F0(\u03bb) - the extraterrestrial solar irradiance \u2013 ?
+    # nw - the index of refraction of the water
+    g1 = 0.0949; g2 = 0.0794 # g1 and g2 \u2013 g1 = 0.0949 sr-2, g2 = 0.0794 sr-2 (Gordon 1988, eq.2)
+
+    # bb(\u03bb) - backscatter, bb(\u03bb) = bbw(\u03bb) + bbp(\u03bb)
+    bbw = Smith_and_Baker_1981_sea_water_backscatter(wave_lengths)
+    # bbp(\u03bb) - particulate backscatter, bbp(\u03bb) = bbp(\u03bb0)*(\u03bb/\u03bb0)^{-n}
+    # bbp(\u03bb0) \u2013 the particulate backscatter coefficient \u2013 output
+    n = 1.03373 # n - the power-law exponent for the particulate backscattering coefficient (Maritorena, 2002, Table 2)
+            
+    # a(\u03bb) - absorption, a(\u03bb) = aw(\u03bb) + aph(\u03bb) + acdm(\u03bb)
+    aw = sea_water_absorption_coef(wave_lengths)
+    # aph(\u03bb) - phytoplankton absorption, aph(\u03bb) = Chl * aph*(\u03bb)
+    # Chl - the concentration of subsurface marine chlorophyll \u2013 output
+    aph_star = Chl_a_specific_absorption_coeffcient(wave_lengths)
+    # acdm(\u03bb) - the combined dissolved and detrital particulate absorption coefficients, acdm(\u03bb) = acdm(\u03bb0)exp[-S(\u03bb-\u03bb0)]
+    # acdm(\u03bb0) - the cdm absorption coefficient \u2013 ouput
+    S = 0.02061 # S - the spectral decay constant for cdm absorption (Maritorena, 2002, Table 2)
+    
+    # GSM01 Formula (unknown Chl, acdm_443, bbp_443)
+    if len(np.shape(Chl)) + len(np.shape(acdm_443)) + len(np.shape(bbp_443)) < 5: # is 2 vars 1d?
+        LwN = 1./len(wave_lengths) * \
+            g1 * ( 
+            bbw + bbp_443*(wave_lengths/443.0)**n / \
+            (bbw + bbp_443*(wave_lengths/443.0)**n + aw + Chl*aph_star + acdm_443*np.exp( - S * (wave_lengths - 443.0)))
+            ) + \
+            g2 * np.array(
+            bbw + bbp_443*(wave_lengths/443.0)**n /
+            (bbw + bbp_443*(wave_lengths/443.0)**n + aw + Chl*aph_star + acdm_443*np.exp( - S * (wave_lengths - 443.0)))
+            )**2
+            
+    elif len(np.shape(Chl)) + len(np.shape(acdm_443)) + len(np.shape(bbp_443)) == 5: #2 variables are 2D
+        # Chl is assumed as 1D, and both acdm and bbp as 2D
+        #if len(np.shape(Chl)) == 1:
+        LwN = np.zeros(len(acdm_443) * len(bbp_443) * len(wave_lengths)).reshape(len(acdm_443), len(bbp_443), len(wave_lengths)) * np.nan
+        
+        for n_bbp in xrange(len(bbp_443)):
+            LwN[:,n_bbp,:] = 1./len(wave_lengths) * \
+                                g1 * ( 
+                                bbw + bbp_443[n_bbp]*(wave_lengths/443.0)**n / \
+                                (bbw + bbp_443[n_bbp]*(wave_lengths/443.0)**n + aw + Chl*aph_star + acdm_443*np.exp( - S * (wave_lengths - 443.0)))
+                                ) + \
+                                g2 * np.array(
+                                bbw + bbp_443[n_bbp]*(wave_lengths/443.0)**n /
+                                (bbw + bbp_443[n_bbp]*(wave_lengths/443.0)**n + aw + Chl*aph_star + acdm_443*np.exp( - S * (wave_lengths - 443.0)))
+                                )**2
+    return LwN
+
+
+
+def gsm01_model(guess = [ 0.002 ,  0.01  ,  0.0029], wave_lengths = [412.0, 443.0, 490.0, 510.0, 555.0, 670.0]):
+    # default wave length bands are from SeaWiFS
+    guess = np.array(guess)
+    wave_lengths = np.array(wave_lengths)
+    
+    grd1 = 0.0949   #constants in eq. 2 Gordon et al., 1988
+    grd2 = 0.0794   #constants in eq. 2 Gordon et al., 1988
+    
+    nwave = len(wave_lengths)   # number of wave lengths measured
+    wave = wave_lengths[0:nwave+1]   # wave lengths to use for calculus
+    bbw_sb81 = Smith_and_Baker_1981_sea_water_backscatter(wave_lengths)
+    
+    bbw = bbw_sb81[0:nwave]   # seawater backscatter
+    bbp_s = np.array(1.03373)   # exponent of particulate backscattering
+    bbpstar = (443.0/wave) ** bbp_s   # particulate backscatter of \u03bb
+    bb = bbw + guess[2]*bbpstar   # backscattering
+    
+    aw_pf97 = sea_water_absorption_coef(wave_lengths)
+    
+    aw = aw_pf97[0:nwave+1]   # water absortion
+    lin_aphstar = Chl_a_specific_absorption_coeffcient(wave_lengths)
+
+    aphstar_lin = lin_aphstar[0:nwave+1]   # Chl a specific absorption coefficient
+    aphstar_exp = np.zeros(nwave)
+    adm_s = np.array(0.02061)              # slope of the CDM ( i.e. ay + ad) absorption
+    admstar = np.exp( - adm_s * (wave - 443.0))
+    
+    abs_coef = aw + aphstar_lin*(guess[0]**(1.0-aphstar_exp)) + guess[1] * admstar
+
+    x = bb/(abs_coef + bb)
+    F = grd1*x + grd2*x**2 # = yfit
+    fact = (grd1 + 2*grd2*x)*x*x
+    
+    # Partial derivatives (pder)
+    ############################
+    # aph(\u03bb) = Chl * aph_star(\u03bb)
+    Chl = -fact * aphstar_lin * (1.0-aphstar_exp) * (guess[0]**(-aphstar_exp))/bb   
+
+    # acdm(\u03bb) = acdm(\u03bb0) EXP[-S(\u03bb-\u03bb0)]
+    acdm_443 = -fact * admstar/bb   
+
+    # bbp(\u03bb) = bbp(\u03bb0)(\u03bb/\u03bb0)^-n
+    bbp_443 = fact * abs_coef *bbpstar/(bb*bb)
+    
+    ## Figure of absorption coefficients
+    #pl.figure();pl.grid('on');pl.suptitle('GSM01 - Absorption coefficents')
+    #plot(wave_lengths, rrs_in,'g',label='Obs.'); plot(wave_lengths, F,'k',label='Modelled')
+    #legend(loc = 'lower right')
+    
+    
+    return np.array(F), np.array([Chl, acdm_443, bbp_443])
+
+def plot_Percentile_analysis(ts, dates, variable='chl', k = 50, save_csv='no', save_plot='no',label_='Chl ($mg.m^{-3}$)'):
+    # developed for AQUA-USERS project
+    # given a time series TS in days
+    # this function calculates:
+    # percentiles 10, 50 (median), and 90, standard deviation, mean
+    # for a annual climatology (for a 7 day week)
+    # and also their respective filtered values by applying a harmonic best fit (k = 50)
+    # and the number of observations per cycle unity
+    
+    # filter out invalid data
+    ts[ts<=0] = np.nan #
+    ts[ts == 9.96920997e+36] = np.nan #for CCI data
+    ts[ts == -999.0] = np.nan #for SST AQUA-USERS archive
+    
+    # filter out values above Mean + (3*SD)
+    if variable == 'chl':
+        ts[ts>(10**stats.nanmean(np.log10(ts)))+3*10**stats.nanstd(np.log10(ts))]=np.nan
+    else:
+        ts[ts>(stats.nanmean(ts))+3*stats.nanstd(ts)]=np.nan
+            
+    # create a table where columns are years and rows days
+    ts_table = np.zeros((366,1+dates[-1].year-dates[0].year))*np.nan
+    for n in xrange(np.shape(ts)[0]): # put values in a table per day
+        ts_table[dates[n].timetuple()[7]-1,dates[n].year-2002] = ts[n]
+        #print n
+    ts_table[ts_table<=0]=np.nan;ts_table =  np.ma.array (ts_table, mask=np.isnan(ts_table))
+    
+    ### Put table into a 7d average
+    ts_7d = np.zeros(np.ceil(366/7.))*np.nan
+    ts_7d_SD = np.zeros(np.ceil(366/7.))*np.nan
+    ts_table_7d = np.zeros((np.ceil(366/7.),1+dates[-1].year-dates[0].year))*np.nan
+    ts_table_7d_SD = np.zeros((np.ceil(366/7.),1+dates[-1].year-dates[0].year))*np.nan
+    ts_table_7d_sum = np.zeros((np.ceil(366/7.),1+dates[-1].year-dates[0].year))*np.nan
+    p10 = np.zeros(np.ceil(366/7.))*np.nan; p90 = np.zeros(np.ceil(366/7.))*np.nan
+    p25 = np.zeros(np.ceil(366/7.))*np.nan; p75 = np.zeros(np.ceil(366/7.))*np.nan
+    p50 = np.zeros(np.ceil(366/7.))*np.nan      
+    
+    for n in xrange(int(np.ceil(366/7.))):# calculate percentiles 
+        ts_7d[n] = stats.nanmean(ts_table[n*7:n*7+6,:].data[~np.isnan(ts_table[n*7:n*7+6,:].data)])    
+        ts_7d_SD[n] = stats.nanstd(ts_table[n*7:n*7+6,:].data[~np.isnan(ts_table[n*7:n*7+6,:].data)])    
+        ts_table_7d[n,:] = stats.nanmean(ts_table[n*7:n*7+6,:].data,axis=0)
+        ts_table_7d_SD[n,:] = stats.nanstd(ts_table[n*7:n*7+6,:].data,axis=0)
+        ts_table_7d_sum[n,:] = np.sum(~np.isnan(ts_table[n*7:n*7+6,:].data),axis=0)
+        if np.sum(ts_table_7d_sum[n,:]) > 0:
+            p10[n] = np.percentile(ts_table[n*7:n*7+6,:].data[~np.isnan(ts_table[n*7:n*7+6,:].data)],10)
+            p25[n] = np.percentile(ts_table[n*7:n*7+6,:].data[~np.isnan(ts_table[n*7:n*7+6,:].data)],25)
+            p50[n] = np.percentile(ts_table[n*7:n*7+6,:].data[~np.isnan(ts_table[n*7:n*7+6,:].data)],50)
+            p75[n] = np.percentile(ts_table[n*7:n*7+6,:].data[~np.isnan(ts_table[n*7:n*7+6,:].data)],75)
+            p90[n] = np.percentile(ts_table[n*7:n*7+6,:].data[~np.isnan(ts_table[n*7:n*7+6,:].data)],90)
+    ts_7d[ts_7d<=0]=np.nan;ts_7d =  np.ma.array (ts_7d, mask=np.isnan(ts_7d))
+    ts_7d_SD =  np.ma.array (ts_7d_SD, mask=np.isnan(ts_7d_SD))
+    ts_table_7d[ts_table_7d<=0]=np.nan;ts_table_7d =  np.ma.array (ts_table_7d, mask=np.isnan(ts_table_7d))
+    ts_table_7d_SD =  np.ma.array (ts_table_7d_SD, mask=np.isnan(ts_table_7d_SD))
+    
+    
+    ## Filter data using harmonic best fit (default  number of harmonics to fit (k=50))
+    ts_7d_f = deseason_harmonic(np.concatenate((ts_7d,ts_7d,ts_7d)),K=k)[1][np.shape(ts_table_7d)[0]:np.shape(ts_table_7d)[0]*2]; ts_7d_f[np.isnan(ts_7d)] = np.nan; ts_7d_f[ts_7d_f<=0]=0
+    ts_7d_SD_f = deseason_harmonic(np.concatenate((ts_7d_SD,ts_7d_SD,ts_7d_SD)),K=50)[1][np.shape(ts_table_7d)[0]:np.shape(ts_table_7d)[0]*2]; ts_7d_SD_f[np.isnan(ts_7d)] = np.nan; ts_7d_SD_f[ts_7d_SD_f<=0]=0
+    p10_f = deseason_harmonic(np.concatenate((p10,p10,p10)),K=k)[1][np.shape(ts_table_7d)[0]:np.shape(ts_table_7d)[0]*2]; p10_f[np.isnan(ts_7d)] = np.nan; p10_f[p10_f<=0]=0
+    p90_f = deseason_harmonic(np.concatenate((p90,p90,p90)),K=k)[1][np.shape(ts_table_7d)[0]:np.shape(ts_table_7d)[0]*2]; p90_f[np.isnan(ts_7d)] = np.nan; p90_f[p90_f<=0]=0
+    p50_f = deseason_harmonic(np.concatenate((p50,p50,p50)),K=k)[1][np.shape(ts_table_7d)[0]:np.shape(ts_table_7d)[0]*2]; p50_f[np.isnan(ts_7d)] = np.nan; p50_f[p50_f<=0]=0
+    p25_f = deseason_harmonic(np.concatenate((p25,p25,p25)),K=k)[1][np.shape(ts_table_7d)[0]:np.shape(ts_table_7d)[0]*2]; p25_f[np.isnan(ts_7d)] = np.nan; p25_f[p25_f<=0]=0
+    p75_f = deseason_harmonic(np.concatenate((p75,p75,p75)),K=k)[1][np.shape(ts_table_7d)[0]:np.shape(ts_table_7d)[0]*2]; p75_f[np.isnan(ts_7d)] = np.nan; p25_f[p25_f<=0]=0
+    
+    
+    ## Save data into a csv file
+    if save_csv == 'yes' or save_csv == 'y':
+        out = open('percentil_analysis_7d.csv', 'w')
+        
+        for row in xrange(np.shape(ts_7d)[0]+1):
+            if row == 0:
+                # Headings
+                out.write('Week (7d);');out.write('mean;');out.write('mean f;')
+                out.write('SD;');out.write('SD f;');out.write('p10;');out.write('p10 f;')
+                out.write('p25;');out.write('p25 f;');out.write('p50;');out.write('p50 f;')
+                out.write('p75;');out.write('p75 f;');out.write('p90;');out.write('p90 f;')
+                out.write('N;'); 
+                out.write('\n')
+    
+            else:
+                #Dates
+                out.write(str(row)+';')
+                
+                #Data (mean, SD, p10, p50, p90)*2(filtered)
+                out.write(str(ts_7d[row-1])+';')
+                out.write(str(ts_7d_f[row-1])+';')# filtered
+                
+                out.write(str(ts_7d_SD[row-1])+';')
+                out.write(str(ts_7d_SD_f[row-1])+';')# filtered
+                
+                out.write(str(p10[row-1])+';')
+                out.write(str(p10_f[row-1])+';')# filtered
+                
+                out.write(str(p25[row-1])+';')
+                out.write(str(p25_f[row-1])+';')# filtered
+        
+                out.write(str(p50[row-1])+';')
+                out.write(str(p50_f[row-1])+';')# filtered
+        
+                out.write(str(p75[row-1])+';')
+                out.write(str(p75_f[row-1])+';')# filtered
+       
+                out.write(str(p90[row-1])+';')
+                out.write(str(p90_f[row-1])+';')# filtered
+                
+                out.write(str(np.sum(ts_table_7d_sum,axis=1)[row-1])+';')
+        
+                out.write('\n')
+        out.close()
+
+    ## plot 
+    #
+    
+    f = pl.figure()#figsize=(8, 8)) 
+    gs = matplotlib.gridspec.GridSpec(4,4) 
+    ax1 = pl.subplot(gs[1:3,:])
+    ax2 = pl.subplot(gs[3,:])
+    #ax1.semilogy([],[],'xk',label='Observations (n='+str(np.sum(~np.isnan(ts)))+')')
+    ax1.plot([],[],'xk',label='Observations (n='+str(np.sum(~np.isnan(ts)))+')')
+
+    ax1.plot(np.linspace(0,53,366),ts_table,'xk')#,label=['Obs.'])
+    ax1.plot(p10,'.b',label='10th Percentile (' + str(round(stats.nanmean(p10),4)) + ')')
+    ax1.plot(p10_f,'-b', label='Harmonic p10 (' + str(round(stats.nanmean(p10_f),4)) + ')')
+    ax1.plot(p90,'.r',label='90th Percentile (' + str(round(stats.nanmean(p90),4)) + ')')
+    ax1.plot(p90_f,'-r', label='Harmonic p90 (' + str(round(stats.nanmean(p90_f),4)) + ')')
+    ax1.plot(p50,'.g',label='Median (' + str(round(stats.nanmean(p50),4)) + ')')
+    ax1.plot(p50_f,'-g', label='Harmonic median (' + str(round(stats.nanmean(p50_f),4)) + ')')
+
+    ax1.plot(ts_7d,'.',color=[0,1,0],label='Mean (' + str(round(stats.nanmean(ts_7d),4)) + ')')
+    ax1.plot(ts_7d_f,color=[0.,1,0.], label='Harmonic mean (' + str(round(stats.nanmean(ts_7d_f),4)) + ')')
+    ax1.plot(ts_7d+ts_7d_SD,'.',color=[.75,.75,.75],label='SD ($\pm$ ' + str(round(stats.nanmean(ts_7d_SD),4)) + ')')
+    ax1.plot(ts_7d-ts_7d_SD,'.',color=[.75,.75,.75])
+    
+    ax1.plot([],[],color=[.90,.90,.90], linewidth=10, label='Harmonic SD ($\pm$' + str(round(stats.nanmean(ts_7d_SD_f),4)) + ')')
+    ax1.fill_between(np.arange(np.shape(ts_7d)[0]), ts_7d-ts_7d_SD_f, 
+                    ts_7d+ts_7d_SD_f,
+                    facecolor=[.90,.90,.90],edgecolor=[])
+    
+    #ax1.set_yscale('log')
+    ax1.set_ylabel(label_)
+    ax1.set_xlim([0,np.shape(ts_7d)[0]-1])
+    ax1.set_ylim([0,max(ax1.get_ylim())])
+    ax1.grid()
+    ax1.set_xticklabels([])
+    ax1.legend(loc='upper center', ncol=2,bbox_to_anchor=(.5, 1.8),prop={'size':12})
+    
+    
+    #f, (ax1, ax2) = pl.subplots(2, 1, sharex=True)
+    ax2.bar(np.arange(np.shape(ts_7d)[0]),np.sum(ts_table_7d_sum,axis=1),fc=[0.,0.,0.],ec='none', width=1,linewidth=0)
+    ax2.set_ylabel('Number of obs.')
+    ax2.set_xlim([0,np.shape(ts_7d)[0]-1])
+    ax2.set_ylim([0,max(np.sum(ts_table_7d_sum,axis=1))+1])
+    ax2.grid()
+    ax2.set_xlabel('Weeks (7 $days$)')
+    
+    if save_plot == 'yes' or save_plot == 'y':
+        pl.savefig('percentil_analysis_7d.png',bbox_inches='tight')
+        #pl.close()
+
+def AQUAUSERS_percentiles_filtered(ts, ts_var, dates = [], var_name = 'Variable', units = ' ', percentiles=[1,10,25,75,90,99], suptitle_ = ' '):
+    '''
+    make figure and analysis of Chl-TS and Var-TS
+    
+    '''
+        ########### Fix time array issue
+    if dates == []:
+        dates=time_line('daily',datetime(2002,7,19),datetime(2012,4,8))
+
+    
+    ############################################################################
+    ## make filtered TSs using low-pass filter with kaiser window
+    M = 2*round(365.25/12); beta_ = 7; b = signal.kaiser(M, beta=beta_)
+    tsF = signal.filtfilt(b/b.sum(), [1.0], np.concatenate((gapfill(ts),gapfill(ts),gapfill(ts))))[np.shape(ts)[0]:np.shape(ts)[0]*2]
+    ts_varF = signal.filtfilt(b/b.sum(), [1.0], np.concatenate((gapfill(ts_var),gapfill(ts_var),gapfill(ts_var))))[np.shape(ts_var)[0]:np.shape(ts_var)[0]*2]
+
+
+    ############################################################################
+    ## make Chl TS in tables one coolumn per year
+    ts_table = np.zeros((366,1+dates[-1].year-dates[0].year))*np.nan
+    ts_table_filtered = np.zeros((366,1+dates[-1].year-dates[0].year))*np.nan
+    
+    for n in xrange(np.shape(ts)[0]): # put values in a table per day
+        ts_table[dates[n].timetuple()[7]-1,dates[n].year-2002] = ts[n]
+    ts_table[ts_table<=0]=np.nan;ts_table =  np.ma.array (ts_table, mask=np.isnan(ts_table))
+    for n in xrange(np.shape(ts)[0]): # put values in a table per day
+        ts_table_filtered [dates[n].timetuple()[7]-1,dates[n].year-2002] = tsF[n]
+    ts_table_filtered[ts_table_filtered<=0]=np.nan;ts_table_filtered =  np.ma.array (ts_table_filtered, mask=np.isnan(ts_table_filtered))
+    #pl.figure();pcolor(np.log10(ts_table));colorbar()
+    #pl.figure();pcolor(np.log10(ts_table_filtered));colorbar()
+    
+    ## make Var TSin tables one column per year
+    ts_var_table_filtered = np.zeros((366,1+dates[-1].year-dates[0].year))*np.nan
+    for n in xrange(np.shape(dates)[0]): # put values in a table per day
+        ts_var_table_filtered [dates[n].timetuple()[7]-1,dates[n].year-2002] = ts_varF[n]
+    ts_var_table_filtered =  np.ma.array (ts_var_table_filtered, mask=np.isnan(ts_var_table_filtered))
+    #pl.figure();pcolor((ts_var_table_filtered));colorbar()
+    
+    
+    ############################################################################
+    ## Calculate 1,10,90,99% from Chl ts_filtered tables - for figure only, not linked to the data analysis written at below the fig
+    p1=[];p10=[];p90=[];p99=[]
+    p1_f=[];p10_f=[];p90_f=[];p99_f=[]
+    for n in xrange(366):
+        if np.sum(~np.isnan(ts_table[n,~np.isnan(ts_table[n,:])]))>0:
+            p1.append(np.percentile(ts_table[n,~np.isnan(ts_table[n,:])],1))
+            p10.append(np.percentile(ts_table[n,~np.isnan(ts_table[n,:])],10))
+            p90.append(np.percentile(ts_table[n,~np.isnan(ts_table[n,:])],90))
+            p99.append(np.percentile(ts_table[n,~np.isnan(ts_table[n,:])],99))
+        else: p1.append(np.nan);p10.append(np.nan);p90.append(np.nan);p99.append(np.nan)
+        if np.sum(~np.isnan(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])]))>0:
+            p1_f.append(np.percentile(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])],1))
+            p10_f.append(np.percentile(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])],10))
+            p90_f.append(np.percentile(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])],90))
+            p99_f.append(np.percentile(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])],99))
+    p1=np.array(p1);p10=np.array(p10);p90=np.array(p90);p99=np.array(p99)
+    p1_f=np.array(p1_f);p10_f=np.array(p10_f);p90_f=np.array(p90_f);p99_f=np.array(p99_f)
+    
+    # last value of p99 and p90 is too low, make average of previous and after last day of climatological year
+    p99_f[-1] = stats.nanmean([p99_f[0],p99_f[-2]])
+    p90_f[-1] = stats.nanmean([p90_f[0],p90_f[-2]])
+    
+    
+    ############################################################################
+    ## index of Chl values above and bellow 99th and 1st percentile, respectively
+    #index_p1 = ts<np.concatenate((p1_f[dates[0].timetuple()[7]-1:],p1_f[0:-1],p1_f,
+    #            p1_f[0:-1],p1_f[0:-1],p1_f[0:-1],p1_f,p1_f[0:-1],p1_f[0:-1],p1_f[0:-1],
+    #            p1_f[0:dates[-1].timetuple()[7]-1]))
+    index_p10 = tsF<np.concatenate((p10_f[dates[0].timetuple()[7]-1:],p10_f[0:-1],p10_f,
+                p10_f[0:-1],p10_f[0:-1],p10_f[0:-1],p10_f,p10_f[0:-1],p10_f[0:-1],p10_f[0:-1],
+                p10_f[0:dates[-1].timetuple()[7]-1]))
+    index_p90 = tsF>np.concatenate((p90_f[dates[0].timetuple()[7]-1:],p90_f[0:-1],p90_f,
+                p90_f[0:-1],p90_f[0:-1],p90_f[0:-1],p90_f,p90_f[0:-1],p90_f[0:-1],p90_f[0:-1],
+                p90_f[0:dates[-1].timetuple()[7]-1]))
+    #index_p99 = ts>np.concatenate((p99_f[dates[0].timetuple()[7]-1:],p99_f[0:-1],p99_f,
+    #            p99_f[0:-1],p99_f[0:-1],p99_f[0:-1],p99_f,p99_f[0:-1],p99_f[0:-1],p99_f[0:-1],
+    #            p99_f[0:dates[-1].timetuple()[7]-1]))
+    dates_p1 = [];dates_p10 = [];dates_p90 = [];dates_p99 = []
+    for n in xrange(np.shape(ts)[0]):
+        #if index_p1[n] == True: dates_p1.append(dates[n])
+        if index_p10[n] == True: dates_p10.append(dates[n])
+        if index_p90[n] == True: dates_p90.append(dates[n])
+        #if index_p99[n] == True: dates_p99.append(dates[n])
+
+
+    ############################################################################
+    # calcualte Chl anomalies
+    chla = tsF-np.concatenate((stats.nanmean(ts_table_filtered,axis=1)[dates[0].timetuple()[7]-1:],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1),
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1),
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:dates[-1].timetuple()[7]-1]))
+    vara = ts_varF-np.concatenate((stats.nanmean(ts_var_table_filtered,axis=1)[dates[0].timetuple()[7]-1:],
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:dates[-1].timetuple()[7]-1]))
+
+
+    ############################################################################
+    ## Plot Figure
+    fig = pl.figure()
+    fig.suptitle(suptitle_)
+    ax1 = fig.add_axes([.1,.6,.8,.3])#left, bottom, width, height
+    ax1.plot_date(dates,ts,'xg',label='Chl satellite obs. (n='+str(sum(~np.isnan(ts)))+'/'+str(np.shape(ts)[0])+')')
+    ax1.plot_date(dates,tsF,'-g',lw=2,label='Chl filtered (kaiser window)')
+    
+    ax2 = ax1.twinx()
+    ax2.plot_date(dates,ts_var,'+',c=[.5,.5,.5],label= var_name + ' satellite obs. (n='+str(sum(~np.isnan(ts_var)))+'/'+str(np.shape(ts_var)[0])+')')
+    ax2.plot_date(dates,ts_varF,'-',c=[.5,.5,.5],lw=2,label= var_name + ' filtered (kaiser window)')
+    
+    ax1.grid('on')
+    ax1.set_ylabel('Chl ($mg.m^{-3}$)')
+    ax1.legend(loc='upper left')
+    ax2.set_ylabel(var_name + ' ('+units+')')
+    ax2.legend(loc='upper right')
+    
+    ################################################################################
+    ## plot Chl values above and bellow 99th and 1st percentile, and correspondent var values
+    ## these are static, do not change with the percentiles input (write below the fig the stats correspondent to each percentile)
+    ax1.plot_date(dates_p10,tsF[index_p10],'.b',mew=1,label='Chl $<$ 10$^{th}$ percentile ('+str(sum(index_p10))+')')
+    #ax1.plot_date(dates_p1,tsF[index_p1],'xb',mew=1,label='Chl $<$ 1$^{st}$ percentile ('+str(sum(index_p1))+')')
+    ax1.plot_date(dates_p90,tsF[index_p90],'.r',mew=1,label='Chl $>$ 90$^{th}$ percentile ('+str(sum(index_p90))+')')
+    #ax1.plot_date(dates_p99,tsF[index_p99],'xr',mew=1,label='Chl $>$ 99$^{th}$ percentile ('+str(sum(index_p99))+')')
+
+    ax2.plot_date(dates_p10,ts_varF[index_p10],'.',c=[.5,.5,1],mew=1,label=var_name + '[Chl $<$ 10$^{th}$ percentile]')
+    #ax2.plot_date(dates_p1,ts_varF[index_p1],'vb',mew=1,label=var_name + '[Chl $<$ 1$^{st}$ percentile]')
+    ax2.plot_date(dates_p90,ts_varF[index_p90],'.',c=[1,.5,.5],mew=1,label=var_name + '[Chl $>$ 90$^{th}$ percentile]')
+    #ax2.plot_date(dates_p99,ts_varF[index_p99],'^r',mew=1,label=var_name + '[Chl $>$ 99$^{th}$ percentile]')
+    
+    ax1.legend(bbox_to_anchor=(0., -.2, 1., .102),loc='upper left', ncol=2)#(x, y, width, height of the bbox)
+    ax2.legend(bbox_to_anchor=(0., -.2, 1., .102),loc='upper right', ncol=2)
+    
+    
+    ################################################################################
+    ## Calculate stats
+    x = np.where(np.isfinite(tsF) & np.isfinite(ts_varF),tsF,np.nan)# Chl
+    y = np.where(np.isfinite(tsF) & np.isfinite(ts_varF),ts_varF,np.nan)# var U
+    index=np.invert(np.isnan(x)) & np.invert(np.isnan(y)) & (x!=0) & (y != 0)#sum(index)
+    x=x[index];y=y[index]
+    
+    r=stats.pearsonr(x,y)[0]# correlation between both ts
+    p=stats.pearsonr(x,y)[1]# Pearson p-value
+    lag = min(np.arange(-np.shape(ts)[0],np.shape(ts)[0]-1)[findpeaks(abs(np.correlate(y,x,mode='full')[:np.shape(x)[0]]))],key=abs)
+    #lag = list(abs(np.correlate(y,x,mode='full')))[np.shape(x)[0]-90:np.shape(x)[0]+90].index(abs(np.correlate(x,y, mode='full'))[np.shape(x)[0]-90:np.shape(x)[0]+90].max())-(90-1)# xcorr lag
+    #figure();plot(np.arange(-np.shape(x)[0],np.shape(x)[0]-1), np.correlate(y,x,mode='full'))
+    if lag<0:
+        r_lag = stats.pearsonr(x[abs(lag):],y[0:lag])[0]# shape(x[0:lag])
+        p_lag = stats.pearsonr(x[abs(lag):],y[0:lag])[1]# shape(x[0:lag])
+    elif lag>0:
+        r_lag = stats.pearsonr(x[0:-lag],y[abs(lag):])[0]# shape(x[0:lag])
+        p_lag = stats.pearsonr(x[0:-lag],y[abs(lag):])[1]# shape(x[0:lag])
+    
+    title_='$r$'+str(round(r,2))+', $p$'+str(round(p,3))+', $lag$'+str(lag)+'d, $r_{lag}$'+str(round(r_lag,2))+', $p_{lag}$'+str(round(p_lag,3))
+    
+    #periodogram
+    f,Pxx,red_noise,sig_95 = periodogram(tsF)#,plot='yes');title(str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2)))
+    #1/f[findpeaks(f*Pxx)][argsort((f*Pxx)[findpeaks(f*Pxx)])][:-10:-1]
+    title_ = title_ + ', $T_{Chl}$ = ' + str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2))+ '$days$'
+    f,Pxx,red_noise,sig_95 = periodogram(ts_varF)#,plot='yes');title(str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2)))
+    #1/f[findpeaks(f*Pxx)][argsort((f*Pxx)[findpeaks(f*Pxx)])][:-10:-1]
+    title_ = title_ + ', $T_{'+var_name+'}$ = ' + str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2))+ '$days$'
+    pl.title(title_)
+    
+    ## stats for anomalies ts
+    x = np.where(np.isfinite(chla) & np.isfinite(vara),chla,np.nan)# Chl
+    y = np.where(np.isfinite(chla) & np.isfinite(vara),vara,np.nan)# var
+    index=np.invert(np.isnan(x)) & np.invert(np.isnan(y)) & (x!=0) & (y != 0)#sum(index)
+    x=x[index];y=y[index]
+    r=stats.pearsonr(x,y)[0]# correlation between both ts
+    p=stats.pearsonr(x,y)[1]# Pearson p-value
+    
+    lag = min(np.arange(-np.shape(ts)[0],np.shape(ts)[0]-1)[findpeaks(abs(np.correlate(y,x,mode='full')[:np.shape(x)[0]]))],key=abs)
+    #lag = list(abs(np.correlate(y,x,mode='full')))[np.shape(x)[0]-90:np.shape(x)[0]+90].index(abs(np.correlate(y,x, mode='full'))[np.shape(x)[0]-90:np.shape(x)[0]+90].max())-(90-1)# xcorr lag
+    #figure();plot(np.arange(-shape(ts)[0],shape(ts)[0]-1),np.correlate(y,x,mode='full'));grid('on')
+    if lag<0:
+        r_lag = stats.pearsonr(x[abs(lag):],y[0:lag])[0]# shape(x[0:lag])
+        p_lag = stats.pearsonr(x[abs(lag):],y[0:lag])[1]# shape(x[0:lag])
+    elif lag>0:
+        r_lag = stats.pearsonr(x[0:-lag],y[abs(lag):])[0]# shape(x[0:lag])
+        p_lag = stats.pearsonr(x[0:-lag],y[abs(lag):])[1]# shape(x[0:lag])
+    
+    title_=title_+', $r_A$'+str(round(r,2))+', $p_A$'+str(round(p,3))+', $lag_A$'+str(lag)+'$d$, $r_{A,lag}$'+str(round(r_lag,2))+', $p_{A,lag}$'+str(round(p_lag,3))
+    
+    #periodogram
+    f,Pxx,red_noise,sig_95 = periodogram(chla)#,plot='yes');title(str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2)))
+    #1/f[findpeaks(f*Pxx)][argsort((f*Pxx)[findpeaks(f*Pxx)])][:-10:-1]
+    title_ = title_ + ', $T_{ChlA}$ = ' + str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2))+ '$d$'
+    f,Pxx,red_noise,sig_95 = periodogram(vara)#,plot='yes');title(str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2)))
+    #1/f[findpeaks(f*Pxx)][argsort((f*Pxx)[findpeaks(f*Pxx)])][:-10:-1]
+    title_ = title_ + ', $T_{'+var_name+'A}$ = ' + str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2))+ '$d$'
+    pl.title(title_)
+    
+    ################################################################################
+    ########################  write Stats for TS<Px (Chl & var) below the figure
+    text_loc=0
+    for per in percentiles:
+        px_f=[]
+        for n in xrange(366):
+            if sum(~np.isnan(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])]))>0:
+                px_f.append(np.percentile(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])],per))
+        px_f=np.array(px_f)
+        
+        if per < 50:
+            index_px = tsF<np.concatenate((px_f[dates[0].timetuple()[7]-1:],px_f[0:-1],px_f,
+                    px_f[0:-1],px_f[0:-1],px_f[0:-1],px_f,px_f[0:-1],px_f[0:-1],px_f[0:-1],
+                    px_f[0:dates[-1].timetuple()[7]-1]))
+        elif per > 50:
+            index_px = tsF>np.concatenate((px_f[dates[0].timetuple()[7]-1:],px_f[0:-1],px_f,
+                    px_f[0:-1],px_f[0:-1],px_f[0:-1],px_f,px_f[0:-1],px_f[0:-1],px_f[0:-1],
+                    px_f[0:dates[-1].timetuple()[7]-1]))
+        elif per == 50:
+            index_px = tsF==np.concatenate((px_f[dates[0].timetuple()[7]-1:],px_f[0:-1],px_f,
+                    px_f[0:-1],px_f[0:-1],px_f[0:-1],px_f,px_f[0:-1],px_f[0:-1],px_f[0:-1],
+                    px_f[0:dates[-1].timetuple()[7]-1]))
+    
+        chla_px = tsF[index_px]-np.concatenate((stats.nanmean(ts_table_filtered,axis=1)[dates[0].timetuple()[7]-1:],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1),
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1),
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:dates[-1].timetuple()[7]-1]))[index_px]
+        text_ = str(per)+'-Percentile: $\~{ChlA}$ = '+str(round(stats.nanmean(chla_px),2))+'$\pm$'+str(round(stats.nanstd(chla_px),2))+'$mg.m^{-3}$'
+        
+        vara_px = ts_varF[index_px]-np.concatenate((stats.nanmean(ts_var_table_filtered,axis=1)[dates[0].timetuple()[7]-1:],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:dates[-1].timetuple()[7]-1]))[index_px]
+        text_ = text_ + ', $\~{'+var_name+'A}$ = '+str(round(stats.nanmean(vara_px),2))+'$\pm$'+str(round(stats.nanstd(vara_px),2))+ units
+        
+        x = np.where(np.isfinite(chla_px) & np.isfinite(vara_px),chla_px,np.nan)# Chl
+        y = np.where(np.isfinite(chla_px) & np.isfinite(vara_px),vara_px,np.nan)# var U
+        index=np.invert(np.isnan(x)) & np.invert(np.isnan(y)) & (x!=0) & (y != 0)#sum(index)
+        x=x[index];y=y[index]
+        text_ = text_ + ', $r_{p'+str(per)+'}$ = '+str(round(stats.pearsonr(x,y)[0],2))+', $p_{p'+str(per)+'}$ = '+str(round(stats.pearsonr(x,y)[1],3))
+        
+        ## Lag var
+        index_lag = np.arange(0,np.shape(ts)[0])[index_px]+lag; index_lag=index_lag[(index_lag>=0) & (index_lag<=np.shape(ts)[0])]
+        chla_px_lag = chla_px[(index_lag>=0) & (index_lag<=np.shape(ts)[0])]
+        vara_px_lag = ts_var[index_lag]-np.concatenate((stats.nanmean(ts_var_table_filtered,axis=1)[dates[0].timetuple()[7]-1:],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:dates[-1].timetuple()[7]-1]))[index_lag]
+        x = np.where(np.isfinite(chla_px_lag) & np.isfinite(vara_px_lag),chla_px_lag,np.nan)# Chl
+        y = np.where(np.isfinite(chla_px_lag) & np.isfinite(vara_px_lag),vara_px_lag,np.nan)# Variable
+        index=np.invert(np.isnan(x)) & np.invert(np.isnan(y)) & (x!=0) & (y != 0)#sum(index)
+        x=x[index];y=y[index]
+        text_ = text_ + ', $\~{'+var_name+'A}_{lag}$ = '+str(round(stats.nanmean(y),2))+'$\pm$'+str(round(stats.nanstd(y),2))+ units+', $r_{p'+str(per)+'+lagA}$ = '+str(round(stats.pearsonr(x,y)[0],2))+', $p_{p'+str(per)+'+lagA}$ = '+str(round(stats.pearsonr(x,y)[1],3))
+        
+        #periodogram
+        ts_periodogram=np.zeros(np.shape(ts)[0]);ts_periodogram[index_px]=1# 0 no occurences 1 for occurrences
+        f,Pxx,red_noise,sig_95 = periodogram(ts_periodogram)#,plot='yes');title(str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2)))
+        #1/f[findpeaks(f*Pxx)][argsort((f*Pxx)[findpeaks(f*Pxx)])][:-10:-1]
+        text_ = text_ + ', $T_{P'+str(per)+'}$ = ' + str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2))+ '$days$'
+        
+        pl.text(dates[0],np.nanmin(ts_var)-(np.nanmax(ts_var)-np.nanmin(ts_var))-(text_loc*(stats.nanstd(ts_var))),text_,size= 'large')
+        text_loc+=1
+
+    #pl.savefig(suptitle_ + 'ChlF_vs_'+ var_name + 'F.png',bbox_inches='tight');pl.close()
+
+    return fig,ax1,ax2
+      
+
+def AQUAUSERS_percentiles(ts, ts_var, dates = [], var_name = 'Variable', units = ' ', percentiles=[1,10,25,75,90,99], suptitle_ = ' '):
+    # var_name = '$M$'; units = '$m^3 s^{-1} 100m^{-1}$'; percentiles=[1,10,90,99]; ts_var = ts_M
+    # suptitle_ = 'Sagres (Lat '+str(round(y0,1))+'$^o$ Lon '+str(round(x0,1))+'$^o$)'
+    '''
+    make figure and analysis of Chl-TS and Var-TS
+    
+    '''
+    ########### Fix time array issue
+    if dates == []:
+        dates=time_line('daily',datetime(2002,7,19),datetime(2012,4,8))
+    
+    ############################################################################
+    ## make filtered TSs using low-pass filter with kaiser window
+    M = 2*round(365.25/12); beta_ = 7; b = signal.kaiser(M, beta=beta_)
+    tsF = signal.filtfilt(b/b.sum(), [1.0], np.concatenate((gapfill(ts),gapfill(ts),gapfill(ts))))[np.shape(ts)[0]:np.shape(ts)[0]*2]
+    ts_varF = signal.filtfilt(b/b.sum(), [1.0], np.concatenate((gapfill(ts_var),gapfill(ts_var),gapfill(ts_var))))[np.shape(ts_var)[0]:np.shape(ts_var)[0]*2]
+
+
+    ############################################################################
+    ## make Chl TS in tables one coolumn per year so we can calculate the percentiles later on
+    ts_table = np.zeros((366,1+dates[-1].year-dates[0].year))*np.nan
+    ts_table_filtered = np.zeros((366,1+dates[-1].year-dates[0].year))*np.nan
+    
+    for n in xrange(np.shape(ts)[0]): # put values in a table per day
+        ts_table[dates[n].timetuple()[7]-1,dates[n].year-2002] = ts[n]
+    ts_table[ts_table<=0]=np.nan;ts_table =  np.ma.array (ts_table, mask=np.isnan(ts_table))
+    for n in xrange(np.shape(ts)[0]): # put values in a table per day
+        ts_table_filtered [dates[n].timetuple()[7]-1,dates[n].year-2002] = tsF[n]
+    ts_table_filtered[ts_table_filtered<=0]=np.nan;ts_table_filtered =  np.ma.array (ts_table_filtered, mask=np.isnan(ts_table_filtered))
+    #pl.figure();pcolor(np.log10(ts_table));colorbar()
+    #pl.figure();pcolor(np.log10(ts_table_filtered));colorbar()
+    
+    ## make Var TSin tables one column per year
+    ts_var_table_filtered = np.zeros((366,1+dates[-1].year-dates[0].year))*np.nan
+    for n in xrange(np.shape(dates)[0]): # put values in a table per day
+        ts_var_table_filtered [dates[n].timetuple()[7]-1,dates[n].year-2002] = ts_varF[n]
+    ts_var_table_filtered =  np.ma.array (ts_var_table_filtered, mask=np.isnan(ts_var_table_filtered))
+    #pl.figure();pcolor((ts_var_table_filtered));colorbar()
+    
+    
+    ############################################################################
+    ## Calculate 1,10,90,99% from Chl ts_filtered tables - for figure only, not linked to the data analysis written at below the fig
+    p1=[];p10=[];p90=[];p99=[]
+    p1_f=[];p10_f=[];p90_f=[];p99_f=[]
+    for n in xrange(366):
+        if sum(~np.isnan(ts_table[n,~np.isnan(ts_table[n,:])]))>0:
+            p1.append(np.percentile(ts_table[n,~np.isnan(ts_table[n,:])],1))
+            p10.append(np.percentile(ts_table[n,~np.isnan(ts_table[n,:])],10))
+            p90.append(np.percentile(ts_table[n,~np.isnan(ts_table[n,:])],90))
+            p99.append(np.percentile(ts_table[n,~np.isnan(ts_table[n,:])],99))
+        else: p1.append(np.nan);p10.append(np.nan);p90.append(np.nan);p99.append(np.nan)
+        if sum(~np.isnan(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])]))>0:
+            p1_f.append(np.percentile(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])],1))
+            p10_f.append(np.percentile(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])],10))
+            p90_f.append(np.percentile(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])],90))
+            p99_f.append(np.percentile(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])],99))
+    p1=np.array(p1);p10=np.array(p10);p90=np.array(p90);p99=np.array(p99)
+    p1_f=np.array(p1_f);p10_f=np.array(p10_f);p90_f=np.array(p90_f);p99_f=np.array(p99_f)
+    # figure();plot(p99_f)
+    
+    # last value of p99 and p90 is too low, make average of previous and after last day of climatological year
+    p99_f[-1] = stats.nanmean([p99_f[0],p99_f[-2]])
+    p90_f[-1] = stats.nanmean([p90_f[0],p90_f[-2]])
+    
+    
+    ############################################################################
+    ## index of Chl values above and bellow 99th and 1st percentile, respectively
+    index_p1 = ts<np.concatenate((p1_f[dates[0].timetuple()[7]-1:],p1_f[0:-1],p1_f,
+                p1_f[0:-1],p1_f[0:-1],p1_f[0:-1],p1_f,p1_f[0:-1],p1_f[0:-1],p1_f[0:-1],
+                p1_f[0:dates[-1].timetuple()[7]-1]))
+    index_p10 = ts<np.concatenate((p10_f[dates[0].timetuple()[7]-1:],p10_f[0:-1],p10_f,
+                p10_f[0:-1],p10_f[0:-1],p10_f[0:-1],p10_f,p10_f[0:-1],p10_f[0:-1],p10_f[0:-1],
+                p10_f[0:dates[-1].timetuple()[7]-1]))
+    index_p90 = ts>np.concatenate((p90_f[dates[0].timetuple()[7]-1:],p90_f[0:-1],p90_f,
+                p90_f[0:-1],p90_f[0:-1],p90_f[0:-1],p90_f,p90_f[0:-1],p90_f[0:-1],p90_f[0:-1],
+                p90_f[0:dates[-1].timetuple()[7]-1]))
+    index_p99 = ts>np.concatenate((p99_f[dates[0].timetuple()[7]-1:],p99_f[0:-1],p99_f,
+                p99_f[0:-1],p99_f[0:-1],p99_f[0:-1],p99_f,p99_f[0:-1],p99_f[0:-1],p99_f[0:-1],
+                p99_f[0:dates[-1].timetuple()[7]-1]))
+    dates_p1 = [];dates_p10 = [];dates_p90 = [];dates_p99 = []
+    for n in xrange(np.shape(ts)[0]):
+        if index_p1[n] == True: dates_p1.append(dates[n])
+        if index_p10[n] == True: dates_p10.append(dates[n])
+        if index_p90[n] == True: dates_p90.append(dates[n])
+        if index_p99[n] == True: dates_p99.append(dates[n])
+
+
+    ############################################################################
+    # calcualte Chl anomalies
+    chla = tsF-np.concatenate((stats.nanmean(ts_table_filtered,axis=1)[dates[0].timetuple()[7]-1:],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1),
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1),
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:dates[-1].timetuple()[7]-1]))
+    vara = ts_varF-np.concatenate((stats.nanmean(ts_var_table_filtered,axis=1)[dates[0].timetuple()[7]-1:],
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_var_table_filtered,axis=1)[0:dates[-1].timetuple()[7]-1]))
+    # figure();plot_date(dates,vara,'-')
+
+    ############################################################################
+    ## Plot Figure
+    fig = pl.figure()
+    fig.suptitle(suptitle_)
+    ax1 = fig.add_axes([.1,.6,.8,.3])#left, bottom, width, height
+    ax1.plot_date(dates,ts,'xg',label='Chl satellite obs. (n='+str(sum(~np.isnan(ts)))+'/'+str(np.shape(ts)[0])+')')
+    ax1.plot_date(dates,tsF,'-g',lw=2,label='Chl filtered (kaiser window)')
+    
+    ax2 = ax1.twinx()
+    ax2.plot_date(dates,ts_var,'x',c=[.5,.5,.5],label= var_name + ' satellite obs. (n='+str(sum(~np.isnan(ts_var)))+'/'+str(np.shape(ts_var)[0])+')')
+    ax2.plot_date(dates,ts_varF,'-',c=[.5,.5,.5],lw=2,label= var_name + ' filtered (kaiser window)')
+    
+    ax1.grid('on')
+    ax1.set_ylabel('Chl ($mg.m^{-3}$)')
+    ax1.legend(loc='upper left')
+    ax2.set_ylabel(var_name + ' ('+units+')')
+    ax2.legend(loc='upper right')
+    
+    ################################################################################
+    ## plot Chl values above and bellow 99th and 1st percentile, and correspondent var values
+    ## these are static, do not change with the percentiles input (write below the fig the stats correspondent to each percentile)
+    ax1.plot_date(dates_p1,ts[index_p1],'+b',mew=1,label='Chl $<$ 1$^{st}$ percentile ('+str(sum(index_p1))+')')
+    ax1.plot_date(dates_p10,ts[index_p10],'xb',mew=1,label='Chl $<$ 10$^{th}$ percentile ('+str(sum(index_p10))+')')
+    ax1.plot_date(dates_p90,ts[index_p90],'xr',mew=1,label='Chl $>$ 90$^{th}$ percentile ('+str(sum(index_p90))+')')
+    ax1.plot_date(dates_p99,ts[index_p99],'+r',mew=1,label='Chl $>$ 99$^{th}$ percentile ('+str(sum(index_p99))+')')
+
+    ax2.plot_date(dates_p10,ts_var[index_p10],'vw',mew=1,label=var_name + '[Chl $<$ 10$^{th}$ percentile]')
+    ax2.plot_date(dates_p1,ts_var[index_p1],'vb',mew=1,label=var_name + '[Chl $<$ 1$^{st}$ percentile]')
+    ax2.plot_date(dates_p90,ts_var[index_p90],'^w',mew=1,label=var_name + '[Chl $>$ 90$^{th}$ percentile]')
+    ax2.plot_date(dates_p99,ts_var[index_p99],'^r',mew=1,label=var_name + '[Chl $>$ 99$^{th}$ percentile]')
+    
+    ax1.legend(bbox_to_anchor=(0., -.2, 1., .102),loc='upper left', ncol=2)#(x, y, width, height of the bbox)
+    ax2.legend(bbox_to_anchor=(0., -.2, 1., .102),loc='upper right', ncol=2)
+    
+    
+    ################################################################################
+    ## Calculate stats
+    x = np.where(np.isfinite(tsF) & np.isfinite(ts_varF),tsF,np.nan)# Chl
+    y = np.where(np.isfinite(tsF) & np.isfinite(ts_varF),ts_varF,np.nan)# var U
+    index=np.invert(np.isnan(x)) & np.invert(np.isnan(y)) & (x!=0) & (y != 0)#sum(index)
+    x=x[index];y=y[index]
+    
+    r=stats.pearsonr(x,y)[0]# correlation between both ts
+    p=stats.pearsonr(x,y)[1]# Pearson p-value
+    lag = min(np.arange(-np.shape(ts)[0],np.shape(ts)[0]-1)[findpeaks(abs(np.correlate(y,x,mode='full')[:np.shape(x)[0]]))],key=abs)
+    #lag = list(abs(np.correlate(y,x,mode='full')))[np.shape(x)[0]-90:np.shape(x)[0]+90].index(abs(np.correlate(x,y, mode='full'))[np.shape(x)[0]-90:np.shape(x)[0]+90].max())-(90-1)# xcorr lag
+    #figure();plot(np.arange(-np.shape(x)[0],np.shape(x)[0]-1), np.correlate(y,x,mode='full'))
+    if lag<0:
+        r_lag = stats.pearsonr(x[abs(lag):],y[0:lag])[0]# shape(x[0:lag])
+        p_lag = stats.pearsonr(x[abs(lag):],y[0:lag])[1]# shape(x[0:lag])
+    elif lag>0:
+        r_lag = stats.pearsonr(x[0:-lag],y[abs(lag):])[0]# shape(x[0:lag])
+        p_lag = stats.pearsonr(x[0:-lag],y[abs(lag):])[1]# shape(x[0:lag])
+    
+    title_='$r$'+str(round(r,2))+', $p$'+str(round(p,3))+', $lag$'+str(lag)+'$d$, $r_{lag}$'+str(round(r_lag,2))+', $p_{lag}$'+str(round(p_lag,3))
+    
+    #periodogram
+    f,Pxx,red_noise,sig_95 = periodogram(tsF)#,plot='yes');title(str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2)))
+    #1/f[findpeaks(f*Pxx)][argsort((f*Pxx)[findpeaks(f*Pxx)])][:-10:-1]
+    title_ = title_ + ', $T_{Chl}$ = ' + str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2))+ '$d$'
+    f,Pxx,red_noise,sig_95 = periodogram(ts_varF)#,plot='yes');title(str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2)))
+    #1/f[findpeaks(f*Pxx)][argsort((f*Pxx)[findpeaks(f*Pxx)])][:-10:-1]
+    title_ = title_ + ', $T_{'+var_name+'}$ = ' + str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2))+ '$d$'
+    pl.title(title_)
+    
+    ## stats for anomalies ts
+    x = np.where(np.isfinite(chla) & np.isfinite(vara),chla,np.nan)# Chl
+    y = np.where(np.isfinite(chla) & np.isfinite(vara),vara,np.nan)# var
+    index=np.invert(np.isnan(x)) & np.invert(np.isnan(y)) & (x!=0) & (y != 0)#sum(index)
+    x=x[index];y=y[index]
+    r=stats.pearsonr(x,y)[0]# correlation between both ts
+    p=stats.pearsonr(x,y)[1]# Pearson p-value
+    
+    lag = min(np.arange(-np.shape(ts)[0],np.shape(ts)[0]-1)[findpeaks(abs(np.correlate(y,x,mode='full')[:np.shape(x)[0]]))],key=abs)
+    #lag = list(abs(np.correlate(y,x,mode='full')))[np.shape(x)[0]-90:np.shape(x)[0]+90].index(abs(np.correlate(y,x, mode='full'))[np.shape(x)[0]-90:np.shape(x)[0]+90].max())-(90-1)# xcorr lag
+    #figure();plot(np.arange(-shape(ts)[0],shape(ts)[0]-1),np.correlate(y,x,mode='full'));grid('on')
+    if lag<0:
+        r_lag = stats.pearsonr(x[abs(lag):],y[0:lag])[0]# shape(x[0:lag])
+        p_lag = stats.pearsonr(x[abs(lag):],y[0:lag])[1]# shape(x[0:lag])
+    elif lag>0:
+        r_lag = stats.pearsonr(x[0:-lag],y[abs(lag):])[0]# shape(x[0:lag])
+        p_lag = stats.pearsonr(x[0:-lag],y[abs(lag):])[1]# shape(x[0:lag])
+    
+    title_=title_+', $r_A$'+str(round(r,2))+', $p_A$'+str(round(p,3))+', $lag_A$'+str(lag)+'$d$, $r_{A,lag}$'+str(round(r_lag,2))+', $p_{A,lag}$'+str(round(p_lag,3))
+    
+    #periodogram
+    f,Pxx,red_noise,sig_95 = periodogram(chla)#,plot='yes');title(str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2)))
+    #1/f[findpeaks(f*Pxx)][argsort((f*Pxx)[findpeaks(f*Pxx)])][:-10:-1]
+    title_ = title_ + ', $T_{ChlA}$ = ' + str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2))+ '$d$'
+    f,Pxx,red_noise,sig_95 = periodogram(vara)#,plot='yes');title(str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2)))
+    #1/f[findpeaks(f*Pxx)][argsort((f*Pxx)[findpeaks(f*Pxx)])][:-10:-1]
+    title_ = title_ + ', $T_{'+var_name+'A}$ = ' + str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2))+ '$d$'
+    pl.title(title_)
+    
+    ################################################################################
+    ########################  write Stats for TS<Px (Chl & var) below the figure
+    text_loc=0
+    for per in percentiles:
+        px_f=[]
+        for n in xrange(366):
+            if sum(~np.isnan(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])]))>0:
+                px_f.append(np.percentile(ts_table_filtered[n,~np.isnan(ts_table_filtered[n,:])],per))
+        px_f=np.array(px_f)
+        
+        if per < 50:
+            index_px = ts<np.concatenate((px_f[dates[0].timetuple()[7]-1:],px_f[0:-1],px_f,
+                    px_f[0:-1],px_f[0:-1],px_f[0:-1],px_f,px_f[0:-1],px_f[0:-1],px_f[0:-1],
+                    px_f[0:dates[-1].timetuple()[7]-1]))
+        elif per > 50:
+            index_px = ts>np.concatenate((px_f[dates[0].timetuple()[7]-1:],px_f[0:-1],px_f,
+                    px_f[0:-1],px_f[0:-1],px_f[0:-1],px_f,px_f[0:-1],px_f[0:-1],px_f[0:-1],
+                    px_f[0:dates[-1].timetuple()[7]-1]))
+        elif per == 50:
+            index_px = ts==np.concatenate((px_f[dates[0].timetuple()[7]-1:],px_f[0:-1],px_f,
+                    px_f[0:-1],px_f[0:-1],px_f[0:-1],px_f,px_f[0:-1],px_f[0:-1],px_f[0:-1],
+                    px_f[0:dates[-1].timetuple()[7]-1]))
+    
+        chla_px = ts[index_px]-np.concatenate((stats.nanmean(ts_table_filtered,axis=1)[dates[0].timetuple()[7]-1:],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1),
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1),
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:-1],
+                    stats.nanmean(ts_table_filtered,axis=1)[0:dates[-1].timetuple()[7]-1]))[index_px]
+        text_ = str(per)+'-Percentile: $\~{ChlA}$ = '+str(round(stats.nanmean(chla_px),2))+'$\pm$'+str(round(stats.nanstd(chla_px),2))+'$mg.m^{-3}$'
+        
+        vara_px = ts_var[index_px]-np.concatenate((stats.nanmean(ts_var_table_filtered,axis=1)[dates[0].timetuple()[7]-1:],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:dates[-1].timetuple()[7]-1]))[index_px]
+        text_ = text_ + ', $\~{'+var_name+'A}$ = '+str(round(stats.nanmean(vara_px),2))+'$\pm$'+str(round(stats.nanstd(vara_px),2))+ units
+        
+        x = np.where(np.isfinite(chla_px) & np.isfinite(vara_px),chla_px,np.nan)# Chl
+        y = np.where(np.isfinite(chla_px) & np.isfinite(vara_px),vara_px,np.nan)# var U
+        index=np.invert(np.isnan(x)) & np.invert(np.isnan(y)) & (x!=0) & (y != 0)#sum(index)
+        x=x[index];y=y[index]
+        text_ = text_ + ', $r_{p'+str(per)+'}$ = '+str(round(stats.pearsonr(x,y)[0],2))+', $p_{p'+str(per)+'}$ = '+str(round(stats.pearsonr(x,y)[1],3))
+        
+        ## Lag var
+        index_lag = np.arange(0,np.shape(ts)[0])[index_px]+lag; index_lag=index_lag[(index_lag>=0) & (index_lag<=np.shape(ts)[0])]
+        chla_px_lag = chla_px[(index_lag>=0) & (index_lag<=np.shape(ts)[0])]
+        vara_px_lag = ts_var[index_lag]-np.concatenate((stats.nanmean(ts_var_table_filtered,axis=1)[dates[0].timetuple()[7]-1:],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1),
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:-1],
+                        stats.nanmean(ts_var_table_filtered,axis=1)[0:dates[-1].timetuple()[7]-1]))[index_lag]
+        x = np.where(np.isfinite(chla_px_lag) & np.isfinite(vara_px_lag),chla_px_lag,np.nan)# Chl
+        y = np.where(np.isfinite(chla_px_lag) & np.isfinite(vara_px_lag),vara_px_lag,np.nan)# Variable
+        index=np.invert(np.isnan(x)) & np.invert(np.isnan(y)) & (x!=0) & (y != 0)#sum(index)
+        x=x[index];y=y[index]
+        text_ = text_ + ', $\~{'+var_name+'A}_{lag}$ = '+str(round(stats.nanmean(y),2))+'$\pm$'+str(round(stats.nanstd(y),2))+ units+', $r_{p'+str(per)+'+lagA}$ = '+str(round(stats.pearsonr(x,y)[0],2))+', $p_{p'+str(per)+'+lagA}$ = '+str(round(stats.pearsonr(x,y)[1],3))
+        
+        #periodogram
+        ts_periodogram=np.zeros(np.shape(ts)[0]);ts_periodogram[index_px]=1# 0 no occurences 1 for occurrences
+        f,Pxx,red_noise,sig_95 = periodogram(ts_periodogram)#,plot='yes');title(str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2)))
+        #1/f[findpeaks(f*Pxx)][argsort((f*Pxx)[findpeaks(f*Pxx)])][:-10:-1]
+        text_ = text_ + ', $T_{P'+str(per)+'}$ = ' + str(round(1/f[f*Pxx==max(f[findpeaks(f*Pxx)]*Pxx[findpeaks(f*Pxx)])],2))+ '$days$'
+        
+        pl.text(dates[0],np.nanmin(ts_var)-(np.nanmax(ts_var)-np.nanmin(ts_var))-(text_loc*(stats.nanstd(ts_var))),text_,size= 'large')
+        text_loc+=1
+
+    #pl.savefig(suptitle_ + 'Chl_vs_'+ var_name + '.png',bbox_inches='tight');pl.close()
+
+    return fig,ax1,ax2
+
+def recurrence(ts,plot='no',plots='no',threshold = 0.2):
+    '''
+    Recurrence Quantification Analysis
+    Recurrence Plots
+    http://www.recurrence-plot.tk/rqa.php
+    
+    input = time series to evaluate, [plot = yes/no]
+    output = 
+    '''
+    if plots=='yes': pl.figure();pl.plot(ts,label='Time Series')
+    
+    # The phase space trajectory (3D)
+    from mpl_toolkits.mplot3d import Axes3D
+    x = ts[1:-1]-stats.nanmean(ts)
+    y = ts[2:]-stats.nanmean(ts)
+    z = ts[0:-2]-stats.nanmean(ts)
+
+    if plots=='yes':     
+        fig = pl.figure()#2D
+        ax = fig.gca()
+        ax.plot(x, y,label='phase space trajetory of ts (x, y)')
+        ax.plot(x, z,label='phase space trajetory of ts (x, z)')
+        ax.plot(y, z,label='phase space trajetory of ts (y, z)')
+        ax.legend()
+        
+        fig = pl.figure()# 3D
+        ax = fig.gca(projection='3d')
+        ax.plot(x, y, z,'-x',label='phase space trajetory of ts')
+        ax.legend()
+
+    # Recurrence plot, assuming phase space 3-dimensional (adapted from Matlab tutorial)
+    N = np.shape(ts)[0]-2
+    t = np.arange(N)
+    S = np.zeros(N*N).reshape(N,N)*np.nan
+    for i in np.arange(N):
+        #a = np.array((x[i] ,y[i], z[i]))#;b = np.array((x[i+1] ,y[i+1], z[i+1]))
+        S[:,i] = np.linalg.norm(np.array((x[i] ,y[i], z[i]))-zip(x,y,z),axis=1)
+        print str((1.+i)/N*100.)+'%'
+
+    if plots=='yes':     
+        pl.figure();pl.pcolormesh(S)
+        pl.figure();pl.pcolormesh(S,cmap='Greys_r')
+    S_ = np.where(S<np.mean(S)*threshold,1,0)#stats.nanmean(S)
+    if plot=='yes':     
+        pl.figure();pl.pcolormesh(S_,cmap='Greys');pl.xlim([0,np.shape(ts)[0]]);pl.ylim([0,np.shape(ts)[0]])
+
+    return S_
+
+
+def recurrence_LAM(S,plot='no'):
+    '''
+    Recurrence Quantification Analysis
+    Laminarity LAM (The percentage of recurrence points which form vertical lines)
+    http://www.recurrence-plot.tk/rqa.php
+    
+    input = recurrence plot (array with ones and zeros)
+    output = LAM and vertical count
+    '''
+    # Find all diagonals in the matrix S
+    verticals=[]
+    for n in xrange(1,np.shape(S)[0]):# n=1
+        # find verticals with shape(S) elements
+        S_vertical = np.copy(S[:,n]) # make array to assess
+        if np.shape(S_vertical)[0] != 1 and np.shape(S_vertical)==sum(S_vertical): verticals.append(np.shape(S_vertical)[0]) # if all diag is ones attached
+        elif np.shape(S_vertical)[0] != 1:
+            for l in xrange(np.shape(S_vertical)[0]):# l = 3205 # sequence of 344 [1]s
+                s_i = []
+                for s in KnuthMorrisPratt(S_vertical,np.ones(np.shape(S_vertical)[0]-l)):s_i.append(s)
+                # implement str.find() method rather than KnuthMorrisPratt, it's faster(!) 
+                # http://code.activestate.com/recipes/117214/
+                    #print 'index0 '+str(s)+', how many ' + str(shape(S_vertical[s:s+shape(S)[0]-l]))+', sum '+str(sum(S_vertical[s:s+shape(S_vertical)-l]))
+                if s_i!=[]:
+                    #print l
+                    for o in s_i[0::np.shape(S_vertical)[0]-l]:
+                        verticals.append(np.shape(S_vertical)[0]-l)
+                        S_vertical[o:o+np.shape(S_vertical)[0]-l] = np.zeros(np.shape(S_vertical[o:o+np.shape(S_vertical)[0]-l]))
+        print str(round((100.*n)/(np.shape(S)[0]),2)) + '%'
+    #verticals = np.concatenate((verticals,verticals))
+    
+    if plot!='no': 
+        pl.figure();pl.hist(verticals,max(verticals),label='no.of diagonal lines');pl.grid('on');#pl.xlim([2,max(verticals)]);pl.ylim([0,verticals.count(2)+2])
+        pl.title('how many $_2$'+str(list(verticals).count(2))+', max recurrence '+str(max(verticals)))
+        pl.ylabel('P(T)');pl.xlabel('T (samples)')
+
+    LAM=100.*(np.shape(verticals)[0]-list(verticals).count(1))/sum(verticals)    
+    return LAM,verticals
+    
+
+def recurrence_DET(S,plot='no'):
+    '''
+    Recurrence Quantification Analysis
+    Determinism DET (The percentage of recurrence points which form diagonal lines)
+    http://www.recurrence-plot.tk/rqa.php
+    
+    input = recurrence plot (array with ones and zeros)
+    output = DET and diagonals count
+    '''
+    # Find all diagonals in the matrix S
+    diags=[]
+
+    for n in xrange(-np.shape(S)[0],np.shape(S)[0]):# n=19 
+        # do not test line of identidy (the middle diagonal line)
+        # find diagonals with np.shape(S) elements
+        S_diagonal = np.copy(S.diagonal(n)) # make array to assess
+        if np.shape(S_diagonal)[0] != 1 and np.shape(S_diagonal)==sum(S_diagonal) and n!=0: diags.append(np.shape(S_diagonal)[0]) # if all diag is ones attached
+        elif np.shape(S_diagonal)[0] != 1 and n!=0:
+            for l in xrange(np.shape(S_diagonal)[0]):# l = 3205 # sequence of 344 [1]s
+                s_i = []
+                for s in KnuthMorrisPratt(S_diagonal,np.ones(np.shape(S_diagonal)[0]-l)):s_i.append(s)
+                    #print 'index0 '+str(s)+', how many ' + str(np.shape(S_diagonal[s:s+np.shape(S_)[0]-l]))+', sum '+str(sum(S_diagonal[s:s+np.shape(S_diagonal)-l]))
+                if s_i!=[]:
+                    #print l
+                    for o in s_i[0::np.shape(S_diagonal)[0]-l]:
+                        diags.append(np.shape(S_diagonal)[0]-l)
+                        S_diagonal[o:o+np.shape(S_diagonal)[0]-l] = np.zeros(np.shape(S_diagonal[o:o+np.shape(S_diagonal)[0]-l]))
+        print str(round((100.*n)/(np.shape(S)[0]),2)) + '%'
+    #diags = np.concatenate((diags,diags))
+        
+    if plot!='no': 
+        pl.figure();pl.hist(diags,max(diags),label='no.of diagonal lines');pl.grid('on');#pl.xlim([1,max(diags)]);pl.ylim([0,diags.count(2)+2])
+        pl.title('how many $_2$'+str(list(diags).count(2))+', max recurrence '+str(max(diags)))
+        pl.ylabel('P(T)');pl.xlabel('T (samples)')
+
+    DET=100.*(np.shape(diags)[0]-list(diags).count(1))/sum(S.reshape(np.shape(S)[0]*np.shape(S)[1]))    
+
+    return DET,diags
+    
+
+def phenology_stats(y,filter='harmonic',plot='no',var_name=[],var_units=[]):
+    #y=[chl_ts,sst_ts,adg_443_qaa_ts,Kd_490_ts,spmi_ts] ; y =chl_ts
+    #var_name=['SST','adg (443)','Kd (490)','SPM']
+    #var_units=['^oC','m^{-1}','m^{-1}','g.m^{-3}']
+    #plot='yes'
+    stats_values = []; z = []
+    if (np.shape(y)[0]>1 and np.shape(y)[0]!=366): # check if there are two time series or one
+        for n in xrange(np.shape(y)[0]-1):
+            z.append(y[n+1].data)
+        y = y[0].data
+    else: y = y.data
+
+    # Calculate stats for Chl
+    if sum(~np.isnan(y))>=100:
+        # pre-filter bad data (negative values, and higher/lower than 3*std)
+        #y=np.where(y<=0,nan,y)
+        #y=np.where(np.log10(y)>stats.nanmean(np.log10(y))+(3*stats.nanstd(np.log10(y))),nan,y)# figure();plot(y,'g-o')
+        y[(y<=0) | (y>=50.) | (np.log10(y)>stats.nanmean(np.log10(y))+(3*stats.nanstd(np.log10(y))))]=np.nan# figure();plot(y,'g-o')
+
+        y_original = y
+        len_y = len(y)
+        x = np.arange(366)+1
+        
+        # clean NANs (gap fill)
+        if sum(np.isnan(y))>0:
+            if np.isnan(y[0]):y[0]=nanmean(np.concatenate([y[1:x[np.isfinite(y)][0]+1] , y[x[np.isfinite(y)][-1]-367:]]))
+            if np.isnan(y[-1:]):y[-1]=nanmean(np.concatenate([np.array([y[0]]),y[x[np.isfinite(y)][-1]-367:]]))
+            f = interpolate.interp1d(x[np.isfinite(y)], y[np.isfinite(y)], kind='linear')# kind = 'cubic'
+            y = f(x)# figure();plot(y,'g-o')
+        
+        # enlongate ts
+        y = np.array(list(y[len(y)/2:]) + list(y) + list(y[0:len(y)/2]))
+
+        # filter high freq (noise)
+        if filter == 'poly':# poly fit (number of vars = 30) --- NOT working!!
+            y = np.poly1d(np.polyfit(np.arange(len(y)), y, 30))
+        if filter == 'butter':# butterworth filter (order of the filter = 1, critical frequencies = 0.5)
+            a,b = signal.butter(1, 0.5);y = signal.filtfilt(a,b, y)
+        if filter == 'gaussian':# gaussian filter (Number of points in the output window = 10, standard deviation = 10)
+            b = signal.gaussian(7, 3); y = signal.filtfilt(b/b.sum(), [1.0], y)# gaussian filter
+        if filter == 'harmonic':# harmonic regression (by Eric) default of 3 cycles and one cycle is 365.25 days, i.e., 1 yr in days (K=3,L=365.25)
+            out, y, beta = deseason_harmonic(y,K=15)# 
+        
+        # shorten ts
+        y = y[len_y/2:len_y+(len_y/2)]# figure();plot(y,'g-o')
+
+        #center bloom peak in time series
+        x_center = x[y==y.max()]
+        if x[y==y.max()] <= (366/2):
+            y = np.array(list(y[int(x_center+(366/2)):]) + list(y[0:int(x_center+(366/2))]))
+        else:
+            y = np.array(list(y[int(x[y==y.max()]-(366/2)):]) + list(y[0:int(x[y==y.max()]-(366/2))]))
+        mean_y = stats.nanmean(y)
+        
+        # enlongate ts
+        y = np.array(list(y[len(y)/2:-1]) + list(y) + list(y[0:(len(y)/2)-1]))
+        x = np.arange(len(y))+1
+
+        # Stats calculus
+        bloom_max = np.nanmax(y)
+        bloom_when_max = x[y==y.max()]
+        bloom_range = np.nanmax(y) - mean_y
+        x_ = bloom_when_max
+        while y[x_]>mean_y:# bloom start
+            x_=x_ - 1
+            bloom_0 = x_ + 1
+        x_ = bloom_when_max
+        while y[x_]>mean_y:# bloom end
+            x_=x_ + 1
+            bloom_end = x_ + 1
+        bloom_duration = bloom_end - bloom_0    
+        bloom_area = 0
+        bloom_perimeter = 0
+        ox = bloom_0;oy = y[bloom_0]
+        for xx,yy in zip(x[bloom_0:bloom_end],y[bloom_0:bloom_end])[1:]:# bloom area and perimeter
+            bloom_area += (xx*oy-yy*ox)
+            bloom_perimeter += abs ((xx-ox) + (yy - oy)*1j)
+            ox,oy = xx,yy
+        bloom_area = bloom_area/2
+        
+        x_shift = bloom_when_max - x_center
+        bloom_when_max = bloom_when_max - x_shift
+        bloom_0 = bloom_0 - x_shift
+        if bloom_0<0: bloom_0 += 366
+        bloom_end = bloom_end - x_shift
+        if bloom_end>366: bloom_end -= 366
+        
+        # shorten ts
+        y = y[(len_y/2):len_y+(len_y/2)] # cut to 366 days
+        y = np.array(list(y[int(366/2-bloom_when_max)-1:])+list(y[0:int(366/2-bloom_when_max)-1]))# shift to right order
+        x = np.arange(len(y_original))+1
+        
+        # put final values in final array
+        stats_values.append(bloom_max)# max
+        stats_values.append(bloom_when_max)# max day
+        stats_values.append(bloom_range)# bloom range
+        stats_values.append(bloom_0)# bloom start day
+        stats_values.append(bloom_end)# bloom end day
+        stats_values.append(bloom_duration)# bloom duration
+        stats_values.append(bloom_area)# bloom area (mg.m-3*day)
+        stats_values.append(bloom_perimeter)# bloom perimeter
+        stats_values.append(stats.nanmean(y))#annual average
+        stats_values.append(max(np.append(y[1:],y[0])-y))# faster growth 
+        stats_values.append(x[np.append(y[1:],y[0])-y==max(np.append(y[1:],y[0])-y)][0])# faster growth day
+        
+        stats_values = np.squeeze(stats_values)
+    
+        #########################################
+        # Calculate values for other variables (adg_443_qaa Kd_490 spmi sst)
+        if z!=[]:
+            z = np.squeeze(z)
+            if np.shape(z)[0]==366: z=[z]
+            #z=np.roll(z,1)
+            z_original = z * np.nan
+            x_z = np.arange(366)
+            for n in xrange(np.shape(z)[0]):# n=1
+                z[n,(z[n,:]>stats.nanmean(z[n,:])+(3*stats.nanstd(z[n,:])))]=np.nan
+                z_original[n,:] = z[n,:]
+                if 366-sum(np.isnan(z[n,:]))>=100 and 366-sum(np.isnan(y))>=100:# if 'var' is valid, and , chl is valid
+                    if sum(np.isnan(z[n,:]))>0:# gap fill
+                        if np.isnan(z[n,0]):z[n,0]=stats.nanmean([z[n,x[np.isfinite(z[n,:])][0]+1], z[n,x[np.isfinite(z[n,:])][-1]-367]])
+                        if np.isnan(z[n,-1]):z[n,-1]=stats.nanmean([z[n,0],z[n,x[np.isfinite(z[n,:])][-1]-367]])
+                        f = interpolate.interp1d(x_z[np.isfinite(z[n,:])], z[n,np.isfinite(z[n,:])], kind='linear')# kind = 'cubic'
+                        z[n,:] = f(x_z)
+                    if filter == 'gaussian':# gaussian filter (Number of points in the output window = 10, standard deviation = 10)
+                        b = signal.gaussian(7, 3); z[n,:] = signal.filtfilt(b/b.sum(), [1.0], z[n,:])# gaussian filter
+                    elif filter == 'harmonic':# harmonic regression (by Eric) default of 3 cycles and one cycle is 365.25 days, i.e., 1 yr in days (K=3,L=365.25)
+                        out, z[n,:], beta = deseason_harmonic(z[n,:],K=15)# figure();plot(z[n,:],'b-o')
+
+                    # Calculate Stats (8+3)
+                    stats_values = np.append(stats_values,z[n,bloom_0-1])# . SST at initiation of growing period (M.-F. Racault et al. / Ecological Indicators 14 (2012) 152\u2013163)
+                    stats_values = np.append(stats_values,z[n,bloom_end-1])# . SST at termination of growing period  (M.-F. Racault et al. / Ecological Indicators 14 (2012) 152\u2013163)
+                    if bloom_0>bloom_end:# . Average SST over duration  (M.-F. Racault et al. / Ecological Indicators 14 (2012) 152\u2013163)
+                        stats_values = np.append(stats_values,stats.nanmean(np.append(z[n,bloom_0-1:-1],z[n,0:bloom_end-1],axis=0)))
+                    else:
+                        stats_values = np.append(stats_values,stats.nanmean(z[n,bloom_0-1:bloom_end-1]))
+                    stats_values = np.append(stats_values,z[n,:].min())# min
+                    stats_values = np.append(stats_values,x_z[z[n,:]==z[n,:].min()][0])# min when
+                    stats_values = np.append(stats_values,z[n,:].max())# max
+                    stats_values = np.append(stats_values,x_z[z[n,:]==z[n,:].max()][0])# max when
+                    stats_values = np.append(stats_values,z[n,x_z[np.append(y[1:],y[0])-y==max(np.append(y[1:],y[0])-y)]][0])
+                    
+                    # Lags (find best negative cross-correlation - prediction of Chl bloom using other vars?)
+                    stats_values = np.append(stats_values,stats.pearsonr(y,z[n,:])[0])# correlation between both ts
+                    stats_values = np.append(stats_values,stats.pearsonr(y,z[n,:])[1])# Pearson p-value
+                    #pl.figure();pl.plot(np.correlate(z[n,:], y,mode='full',old_behavior=True),'b')
+                    #pl.figure();pl.plot(np.correlate(y, y,mode='full',old_behavior=True),'b')
+                    stats_values = np.append(stats_values,# xcorr lag
+                        list(np.correlate(z[n,:], y, mode='full')).index(np.correlate(z[n,:], y, mode='full')[0:np.shape(z[n,:])[0]-1].max())-(np.shape(z[n,:])[0]-1))
+                    if stats_values[-1]!=0:
+                        stats_values = np.append(stats_values,stats.pearsonr(
+                            np.concatenate((y[-stats_values[-1]:],y[0:-stats_values[-1]])),
+                            z[n,:])[0])
+                        stats_values = np.append(stats_values,stats.pearsonr(
+                            np.concatenate((y[-stats_values[-2]:],y[0:-stats_values[-2]])),
+                            z[n,:])[1])
+                    
+        if plot=='yes': 
+            ax1_=[];ax2_=[];fig_=[]
+            if z != []:
+                if var_name!=[] and var_units!=[]:
+                    fig,ax1,ax2 = phenology_stats_plot(y_original, y, stats_values, z_original=z_original[n,:], z=z[n,:], z_name=var_name[n],z_units=var_units[n])
+                    ax1_=np.append(ax1_,ax1)
+                    ax2_=np.append(ax2_,ax2)
+                    fig_=np.append(fig_,fig)
+                else:
+                    fig,ax1,ax2 = phenology_stats_plot(y_original, y, stats_values, z_original=z_original[n,:], z=z[n,:])
+                    fig_=np.append(fig_,fig)
+                    ax1_=np.append(ax1_,ax1)
+                    ax2_=np.append(ax2_,ax2)
+            else: 
+                fig,ax1 = phenology_stats_plot(y_original, y, stats_values); ax2 =[]
+                fig_=np.append(fig_,fig)
+                ax1_=np.append(ax1_,ax1)
+                ax2 = []
+        
+        # Names of stats calculated
+        stats_name = [['Bloom maximum','Day of bloom maximum','Bloom range','Day of bloom start',
+                'Day of bloom end','Bloom duration','Bloom area','Bloom perimeter','Annual average',
+                'Chl faster growth (mg/m3/d)','Chl faster growth day']]
+        if z!=[]:
+            for n in xrange(np.shape(z)[0]):
+                if var_name ==[]:
+                    stats_name.append(['var'+str(n+1)+'@ bloom 0','var'+str(n+1)+'@ bloom end',
+                                    'var'+str(n+1)+' average during bloom','var'+str(n+1)+' min',
+                                    'var'+str(n+1)+' min day','var'+str(n+1)+' max',
+                                    'var'+str(n+1)+' max day','var'+str(n+1)+'@ Chl faster growth day',
+                                    'var'+str(n+1)+' corrcoef','var'+str(n+1)+' p-value',
+                                    'var'+str(n+1)+' best negative lag',
+                                    'var'+str(n+1)+' lag correlation','var'+str(n+1)+' lag p-value'])
+                else: 
+                    stats_name.append([var_name[n]+'@ bloom 0',var_name[n]+'@ bloom end',
+                                    var_name[n]+' average during bloom',var_name[n]+' min',
+                                    var_name[n]+' min day',var_name[n]+' max',
+                                    var_name[n]+' max day',var_name[n]+'@ Chl faster growth day',
+                                    var_name[n]+' corrcoef',var_name[n]+' p-value',
+                                    var_name[n]+' best negative lag',
+                                    var_name[n]+' lag correlation',var_name[n]+' lag p-value'])
+
+        stats_name=[item for sublist in stats_name for item in sublist]# make sats names one list
+        
+        if plot == 'yes': 
+            if ax2==[]: return stats_values,stats_name,y,z,np.squeeze(fig_),np.squeeze(ax1_)
+            else: return stats_values,stats_name,y,z,np.squeeze(fig_),np.squeeze(ax1_),np.squeeze(ax2_)
+        else: return stats_values,stats_name,y,z
+        
+
+def phenology_stats_plot(y_original, y, stats_values, z_original=[],z = [],z_name=[],z_units=[],):
+
+    f, ax1 = pl.subplots();pl.grid()
+
+    ax1.plot(np.arange(len(y_original))+1,y_original,linewidth='.75',color=[.5,1,.5])
+    ax1.plot(np.arange(len(y_original))+1,y,color = 'g',linewidth=3)
+    ax1.axhline(y=y.mean(),ls='--',c='k')
+    ax1.set_xlim(0,366)
+
+    # Plot vertical lines showing period considered to be bloom & cross where Chl max growth
+    ax1.plot(stats_values[10]+1,y[stats_values[10]],'ok',ms=5,mew=1)
+    ax1.axhline(y=y.mean(),xmin=(stats_values[3]+1)/366.,xmax=(stats_values[4]-1)/366.,c='k',lw=3)
+
+    ax1.legend(('Chl obs', 'filtered', 'Chl mean ('+str(round(y.mean(),2))+' $mg.m^{-3}$)','Max growth ('+str(round(stats_values[9],4))+' $mg.m^{-3}.d^{-1}$)','bloom period'), loc='upper right')
+    ax1.set_xlabel('$days$')
+    ax1.set_ylabel('Chlorophyll-$a$ ($mg.m^{-3}$)')
+    
+    if z!=[] and z_original!=[]:
+        if 366-sum(np.isnan(z_original))>0:
+            ax2 = ax1.twinx()
+            ax2.plot(np.arange(len(y_original))+1,z_original, color = [1,.5,.5],linewidth='.75',label=z_name+' obs')
+            if 366-sum(np.isnan(z_original))>100:
+                ax2.plot(np.arange(len(y_original))+1,z, color = [1,0,0],linewidth='3',label= 'filtered')
+            ax2.set_ylabel(z_name + ' ($'+z_units+'$)')
+            ax2.legend(loc='upper right')
+            ax2.set_xlim(0,366)
+            
+            ax1.set_zorder(1)
+            ax1.patch.set_facecolor('none')
+    else: ax2 = []
+        
+    if ax2!=[]: return f,ax1,ax2
+    else: return f,ax1
+
+def open_avhrr_1100m(t_res='daily',d='climatology',reg='rra',variable='sstp'):## Open AVHRR-1.1km (AQUA-USERS)
+   # data,data_lat,data_lon=open_avhrr_1100km('daily',d='M2002092-2002092.rra.sstp.AVH.L3_median.02apr02-02apr02.v1.20142520837.data.nc')
+   # t_res='daily'; d='climatology'; d='M2002092-2002092.rra.sstp.AVH.L3_median.02apr02-02apr02.v1.20142520837.data.nc'
+   if d[:11]=='climatology':
+       file_names=glob.glob('/home/adcouto/Data/AVHRR-1.1km/'+t_res+'/mapped/*'+d+'*'+reg+'_'+var+'*')
+   else: file_names=glob.glob('/home/adcouto/Data/AVHRR-1.1km/'+t_res+'/mapped/'+d)
+   
+   if (not file_names) == False:
+       print file_names[0] + ' ' + d
+       fileobj = Dataset(file_names[0])
+       data = np.squeeze(fileobj.variables[variable][:])
+       data[(data<=0) | (data>=50.0)]=np.nan
+       data_lat=fileobj.variables['latitude'][:] 
+       data_lon=fileobj.variables['longitude'][:]
+       fileobj.close()
+   else:
+       data=[];data_lat=[];data_lon=[]
+    
+   #figure();pcolormesh(data_lon,data_lat,data[0]);colorbar()
+   #plot_map(np.squeeze(data),data_lat,data_lon,scale=[15,20])    
+    
+   if data!=[]:
+       data_lon,data_lat=np.meshgrid(data_lon,data_lat)
+       if (d[:11]=='climatology') and (t_res == 'daily'):
+           data=data.reshape(np.shape(data_lat)[0],np.shape(data_lon)[1],
+           np.shape(data)[0]/(np.shape(data_lon)[1]*np.shape(data_lat)[0]))
+   return data,data_lat,data_lon
+   
+   
+def open_merisFR(t_res,d,reg='rri',variable='chlor_a'):## Open MERIS-FullResolution nc file
+   # data,data_lat,data_lon=open_merisFR('daily','M2008001.1038.rra.all_products.MFR.01jan081038.v1.20142051807.data.nc')
+   # t_res='daily'; d='climatology'; d='M2006342.1107.rri.all_products.MFR.08dec061107.v1.20142071738.data.nc'
+   if d[:11]=='climatology':
+       file_names=glob.glob('/home/adcouto/Data/MERIS-FR/'+t_res+'/mapped/*'+d+'*'+reg+'_'+variable+'*')
+   else: file_names=glob.glob('/home/adcouto/Data/MERIS-FR/'+t_res+'/mapped/'+d)
+   
+   if (not file_names) == False:
+       print file_names[0] + ' ' + d
+       fileobj = Dataset(file_names[0])
+       data = fileobj.variables[variable][:]
+       #data=np.where((data<=0) | (data==0),np.nan,data)
+       data[(data<=0) | (data==-32767.0)]=np.nan
+       #data=np.where((data==-32767.0) | (data==0),np.nan,data)
+       data_lat=fileobj.variables['latitude'][:] 
+       data_lon=fileobj.variables['longitude'][:]
+       fileobj.close()
+   else:
+       data=[];data_lat=[];data_lon=[]
+    
+   #figure();pcolormesh(data_lon,data_lat,data[0]);colorbar()
+   #plot_map(log10(data),data_lat,data_lon)    
+    
+   if data!=[]:
+       data_lon,data_lat=np.meshgrid(data_lon,data_lat)
+       if (d[:11]=='climatology') and (t_res == 'daily'):
+           data=data.reshape(np.shape(data_lat)[0],np.shape(data_lon)[1],
+           np.shape(data)[0]/(np.shape(data_lon)[1]*np.shape(data_lat)[0]))
+       else: data=data[0]
+       #data=np.flipud(data)
+       #data=np.where(data<.01, .01, data)
+       #data=np.where(data>100, 100, data)
+   return data,data_lat,data_lon
+   
+def time_line(t_res, dt, end):
+    '''
+    t_res = 'daily' or 'monthly'
+    dt = datetime(1997, 09, 04)
+    end = datetime(2012, 7, 31)
+    step = timedelta(days=1)
+    '''
+    
+    dates = []
+    dates_m = []
+    while dt <= end:
+        #dates.append(dt.strftime('%Y-%m-%d'))
+        dates.append(dt)
+        if dt.day==15:
+            dates_m.append(dt)
+        dt += timedelta(days=1)
+    
+    if t_res=='monthly':
+        dates=dates_m
+        del dates_m
+        
+    return dates
+
+def deseason_harmonic(data,K=100,L=365.25):
+    #data = sin(np.arange(100))
+    #[deseasoned_data, season, beta] = deseason_harmonic(data, K, L)
+    # 
+    # Subtracts the seasonal cycle (season) from the data (data). Season
+    # is calculated by fitting K harmonics of the annual cycle (as well as the
+    # mean) to the data. Assumes the year has L elements (i.e., 365 for daily data,
+    # 73 for pentad data, 52 for weekly data, etc.).
+    # Outputs the deseasonalized data, the season, and the fitting parameters (beta)
+    #
+    # Written by Eric Oliver, Dalhousie University, 2007-2011
+    # adapted to python by abc.., 22 Apr 2014
+    # add dealing with NAN's
+
+    n = len(data)
+    time = np.arange(n)*1./n;
+    notnans = ~np.isnan(data)# sum(isnan(data))
+    
+    # set up mean and harmonics to fit data
+    #P = [np.ones(n)]# only with B0 (mean)
+    P = [np.ones(n), np.arange(n)+1]# added trend (2nd array) B1(trend)
+    for k in np.arange(K)+1:
+        P = np.append(P,[np.cos(k*2*np.pi*time),np.sin(k*2*np.pi*time)],axis=0)
+    #P = np.append(P,[(np.arange(n)+1)*np.cos(2*np.pi*time),(np.arange(n)+1)*np.sin(2*np.pi*time)],axis=0)# linear trend in the amplitude of the annual harmonics
+    #shape(P)
+    P = np.matrix(P)
+        
+    # Remove seasonal cycle by harmonic regression
+    beta = np.dot(((P[:,notnans]*P[:,notnans].T).I*P[:,notnans]),data[notnans])
+    beta=np.asarray(beta).ravel()
+    
+    season = np.dot(P.T, beta)
+    out = data - season
+    
+    out=np.asarray(out).ravel()
+    season=np.asarray(season).ravel()
+    beta=np.asarray(beta).ravel()
+    # figure();plot(data);plot(out);plot(season)
+
+    return out, season, beta
+    
+def gapfill(y,kind = 'linear'):
+    #y = ts
+    x = np.arange(len(y))
+
+    if np.isnan(y[0]):y[0]=stats.nanmean(np.concatenate([y[1:x[np.isfinite(y)][0]+1] , y[x[np.isfinite(y)][-1]-367:]]))
+    if np.isnan(y[-1:]):y[-1]=stats.nanmean(np.concatenate([np.array([y[0]]),y[x[np.isfinite(y)][-1]-367:]]))
+    f = interpolate.interp1d(x[np.isfinite(y)], y[np.isfinite(y)], kind=kind)# kind = 'cubic'
+    y = f(x)
+
+    return y
+
+def interpolate_bin_2_regulargrid(data2_lon,data2_lat,data2,lon,lat):
+    # data2_lon=data1_lon;data2_lat=data1_lat;data2=data1
+    # sub select data into four regions, to make it faster(?)
+    #_1
+    data2_lon_1=data2_lon[(data2_lon<data2_lon.mean())*(data2_lat<data2_lat.mean())]
+    data2_lat_1=data2_lat[(data2_lon<data2_lon.mean())*(data2_lat<data2_lat.mean())]
+    data2_1 = data2[(data2_lon<data2_lon.mean())*(data2_lat<data2_lat.mean())]
+    lon_1 = lon[(lon<lon.mean())*(lat<lat.mean())].reshape(lon.shape[0]/2,lat.shape[1]/2)
+    lat_1 = lat[(lon<lon.mean())*(lat<lat.mean())].reshape(lon.shape[0]/2,lat.shape[1]/2)
+    #_2
+    data2_lon_2=data2_lon[(data2_lon>data2_lon.mean())*(data2_lat<data2_lat.mean())]
+    data2_lat_2=data2_lat[(data2_lon>data2_lon.mean())*(data2_lat<data2_lat.mean())]
+    data2_2 = data2[(data2_lon>data2_lon.mean())*(data2_lat<data2_lat.mean())]
+    lon_2 = lon[(lon>lon.mean())*(lat<lat.mean())].reshape(lon.shape[0]/2,lat.shape[1]/2)
+    lat_2 = lat[(lon>lon.mean())*(lat<lat.mean())].reshape(lon.shape[0]/2,lat.shape[1]/2)
+    #_3
+    data2_lon_3=data2_lon[(data2_lon>data2_lon.mean())*(data2_lat>data2_lat.mean())]
+    data2_lat_3=data2_lat[(data2_lon>data2_lon.mean())*(data2_lat>data2_lat.mean())]
+    data2_3 = data2[(data2_lon>data2_lon.mean())*(data2_lat>data2_lat.mean())]
+    lon_3 = lon[(lon>lon.mean())*(lat>lat.mean())].reshape(lon.shape[0]/2,lat.shape[1]/2)
+    lat_3 = lat[(lon>lon.mean())*(lat>lat.mean())].reshape(lon.shape[0]/2,lat.shape[1]/2)
+    #_4
+    data2_lon_4=data2_lon[(data2_lon<data2_lon.mean())*(data2_lat>data2_lat.mean())]
+    data2_lat_4=data2_lat[(data2_lon<data2_lon.mean())*(data2_lat>data2_lat.mean())]
+    data2_4 = data2[(data2_lon<data2_lon.mean())*(data2_lat>data2_lat.mean())]
+    lon_4 = lon[(lon<lon.mean())*(lat>lat.mean())].reshape(lon.shape[0]/2,lat.shape[1]/2)
+    lat_4 = lat[(lon<lon.mean())*(lat>lat.mean())].reshape(lon.shape[0]/2,lat.shape[1]/2)
+
+    # interpolate for each sub-region
+    print '1/4'
+    data2_1of4=interpolate.griddata(zip(data2_lon_1,data2_lat_1), data2_1,\
+     (lon_1,lat_1))
+    #plot_map(np.log10(data2_1of4),lat_1,lon_1,'chl');pl.title('1/2')
+    print '2/4'
+    data2_2of4=interpolate.griddata(zip(data2_lon_2,data2_lat_2), data2_2,\
+     (lon_2,lat_2))
+    #plot_map(np.log10(data2_2of4),lat_2,lon_2,'chl');pl.title('2/2')
+    print '3/4'
+    data2_3of4=interpolate.griddata(zip(data2_lon_3,data2_lat_3), data2_3,\
+     (lon_3,lat_3))
+    #plot_map(np.log10(data2_3of4),lat_3,lon_3,'chl');pl.title('3/2')
+    print '4/4'
+    data2_4of4=interpolate.griddata(zip(data2_lon_4,data2_lat_4), data2_4,\
+     (lon_4,lat_4))
+    #plot_map(np.log10(data2_4of4),lat_4,lon_4,'chl');pl.title('4/2')
+    
+    # join maps
+    data = []
+    data = np.concatenate((np.concatenate((data2_1of4,data2_4of4),axis=0),\
+     np.concatenate((data2_2of4,data2_3of4),axis=0)),axis=1)
+    #plot_map(np.log10(data),lat,lon,'chl');pl.title('Joined')
+    
+    print ('\a')
+    return data 
+
+def dates_meris(exception='none'):#29/4/2002 to 8/4/2012
+    dates_meris = time_line(t_res,datetime(2002,4,29),datetime(2012,4,8))
+    for i in [9,12,13,14,28]:dates_meris.remove(datetime(2002,5,i))
+    for i in [7,8,9,10]:dates_meris.remove(datetime(2002,6,i))
+    for i in [9,10,15,16,24]:dates_meris.remove(datetime(2002,9,i))
+    for i in [6,7,10]:dates_meris.remove(datetime(2002,11,i))
+    for i in [21,22,23]:dates_meris.remove(datetime(2003,2,i))
+    for i in [16,17,18]:dates_meris.remove(datetime(2003,3,i))
+    dates_meris.remove(datetime(2003,5,19)); dates_meris.remove(datetime(2004,6,9))
+    dates_meris.remove(datetime(2006,4,7))
+    for i in [8,9]:dates_meris.remove(datetime(2006,9,i))
+    dates_meris.remove(datetime(2006,11,29))
+    for i in [13,14]:dates_meris.remove(datetime(2006,12,i))
+    for i in [25,26]:dates_meris.remove(datetime(2007,9,i))
+    dates_meris.remove(datetime(2010,10,20))
+    for i in xrange(22,32): dates_meris.remove(datetime(2010,10,i))
+    for i in [1,2,3,4]:dates_meris.remove(datetime(2010,11,i))
+    dates_meris.remove(datetime(2011,4,4))
+
+    if exception != 'none':
+        dates_s = dates_seawifs();dates_ma = dates_modisA()
+        for i in xrange(len(dates_s)): # remove dates in common from MODIS-Aqua
+            if dates_s[i] in dates_meris:
+                dates_meris.remove(dates_s[i]) 
+        for i in xrange(len(dates_ma)): # remove dates in common from MERIS
+            if dates_ma[i] in dates_meris:
+                dates_meris.remove(dates_ma[i]) 
+
+    return dates_meris 
+
+def dates_modisA(exception='none'):
+    dates_modisA = time_line(t_res,datetime(2002,7,4),datetime(2012,7,31))
+    for i in [30,31]:dates_modisA.remove(datetime(2002,7,i))
+    for i in [1,2,3,4,5]:dates_modisA.remove(datetime(2002,8,i))
+    
+    if exception != 'none':
+        dates_s = dates_seawifs();dates_me = dates_meris()
+        for i in xrange(len(dates_s)): # remove dates in common from MODIS-Aqua
+            if dates_s[i] in dates_modisA:
+                dates_modisA.remove(dates_s[i]) 
+        for i in xrange(len(dates_me)): # remove dates in common from MERIS
+            if dates_me[i] in dates_modisA:
+                dates_modisA.remove(dates_me[i]) 
+
+    return dates_modisA
+
+def dates_seawifs(exception='none'):
+    # makes array list of days/months that seawifs output observations
+    # exception = remove common dates between meris (me) or modis-Aqua (mo) or both
+    dates_seawifs = time_line(t_res,datetime(1997,9,4),datetime(2010,12,11))
+    for i in [5,7,8,11,12,13,14,17]:dates_seawifs.remove(datetime(1997,9,i))
+    for i in xrange(14,19):dates_seawifs.remove(datetime(1997,10,i))
+    dates_seawifs.remove(datetime(1997,12,15))
+    for i in xrange(17,21):dates_seawifs.remove(datetime(1998,11,i))
+    dates_seawifs.remove(datetime(1998,12,17));dates_seawifs.remove(datetime(1999,1,25))
+    for i in xrange(17,19):dates_seawifs.remove(datetime(1999,11,i))
+    dates_seawifs.remove(datetime(2000,11,17));dates_seawifs.remove(datetime(2001,11,18))
+    for i in xrange(20,23):dates_seawifs.remove(datetime(2003,12,i))
+    dates_seawifs.remove(datetime(2007,10,5))
+    for i in xrange(2,32):dates_seawifs.remove(datetime(2008,1,i))
+    for i in xrange(1,30):dates_seawifs.remove(datetime(2008,2,i))
+    for i in xrange(1,32):dates_seawifs.remove(datetime(2008,3,i))
+    for i in [1,2,3,29]:dates_seawifs.remove(datetime(2008,4,i))
+    for i in [8,22]:dates_seawifs.remove(datetime(2008,5,i))
+    for i in [22,28,29]:dates_seawifs.remove(datetime(2008,6,i))
+    for i in xrange(2,32):dates_seawifs.remove(datetime(2008,7,i))
+    for i in xrange(1,19):dates_seawifs.remove(datetime(2008,8,i))
+    for i in [1,2]:dates_seawifs.remove(datetime(2008,10,i))
+    dates_seawifs.remove(datetime(2009,1,7))
+    for i in xrange(24,31):dates_seawifs.remove(datetime(2009,4,i))
+    for i in xrange(1,32):dates_seawifs.remove(datetime(2009,5,i))
+    for i in xrange(1,16):dates_seawifs.remove(datetime(2009,6,i))
+    for i in xrange(2,18):dates_seawifs.remove(datetime(2009,7,i))
+    dates_seawifs.remove(datetime(2009,8,31))
+    for i in [1,2]:dates_seawifs.remove(datetime(2009,9,i))
+    for i in xrange(5,31):dates_seawifs.remove(datetime(2009,9,i))
+    for i in [1,2,3,4,5,6,7]:dates_seawifs.remove(datetime(2009,10,i))
+    for i in xrange(10,32):dates_seawifs.remove(datetime(2009,10,i))
+    for i in [1,2,3,4,5,12]:dates_seawifs.remove(datetime(2009,11,i))
+    for i in xrange(24,31):dates_seawifs.remove(datetime(2009,11,i))
+    dates_seawifs.remove(datetime(2009,12,1))
+    for i in [7,8,31]:dates_seawifs.remove(datetime(2010,1,i))
+    dates_seawifs.remove(datetime(2010,3,22))
+    for i in [28,29,30]:dates_seawifs.remove(datetime(2010,6,i))
+    for i in xrange(1,12):dates_seawifs.remove(datetime(2010,7,i))
+    for i in [10,11,12,31]:dates_seawifs.remove(datetime(2010,8,i))
+    for i in [1,2,11]:dates_seawifs.remove(datetime(2010,9,i))
+
+    if exception == 'all':
+        dates_ma = dates_modisA();dates_me = dates_meris()
+        for i in xrange(len(dates_ma)): # remove dates in common from MODIS-Aqua
+            if dates_ma[i] in dates_seawifs:
+                dates_seawifs.remove(dates_ma[i]) 
+        for i in xrange(len(dates_me)): # remove dates in common from MERIS
+            if dates_me[i] in dates_seawifs:
+                dates_seawifs.remove(dates_me[i]) 
+    elif exception == 'me':
+        dates_me = dates_meris()
+        for i in xrange(len(dates_me)): # remove dates in common from MERIS
+            if dates_me[i] in dates_seawifs:
+                dates_seawifs.remove(dates_me[i]) 
+    elif exception == 'mo':
+        dates_ma = dates_modisA()
+        for i in xrange(len(dates_ma)): # remove dates in common from MODIS-Aqua
+            if dates_ma[i] in dates_seawifs:
+                dates_seawifs.remove(dates_ma[i]) 
+                
+    return dates_seawifs
+
+def plot_topo(levels = np.arange(-5000,0,1000),m = '0',
+    fontsize=10, inline=1,fmt='%1.0f',colors = 'w',inline_spacing=5,
+    manual='False',rightside_up='True',use_clabeltext='False'):#plot a contour of SRTM30+v6 bathymetry
+    if m==0:
+        f = pl.gcf()
+        ax = f.gca()
+        x0=ax.dataLim.x0
+        x1=ax.dataLim.x1
+        y0=ax.dataLim.y0
+        y1=ax.dataLim.y1
+    else:
+        x0 = m.lonmin
+        x1 = m.lonmax
+        y0 = m.latmin
+        y1 = m.latmax
+
+    grid   = Dataset('http://geoport.whoi.edu/thredds/dodsC/bathy/srtm30plus_v6') 
+    lat_topo = grid.variables['lat'][:]# 21600
+    lon_topo = grid.variables['lon'][:]# 43200
+    topo = np.flipud(grid.variables['topo'][(lat_topo>=y0) & (lat_topo<=y1),
+                                (lon_topo>=x0) & (lon_topo<=x1)])
+    lat_topo = np.flipud(lat_topo[(lat_topo>=y0) & (lat_topo<=y1)])
+    lon_topo = lon_topo[(lon_topo>=x0) & (lon_topo<=x1)]
+    grid.close()
+    
+    matplotlib.rcParams['contour.negative_linestyle'] = 'solid'
+    if m==0:
+        CS = pl.contour(lon_topo,lat_topo,topo,levels=levels, colors='k')
+        pl.clabel(CS, levels[1::2], fontsize=12, inline=1,fmt='%1.0f')
+    else:
+        lon_topo,lat_topo=np.meshgrid(lon_topo,lat_topo)
+        x, y = m(lon_topo, lat_topo)
+        CS = m.contour(x,y,topo,levels=levels,colors='k')
+        CS = m.contour(x,y,topo,levels=levels[1::2],linewidths=2,colors='k')
+        pl.clabel(CS, levels[1::2], fontsize=fontsize, inline=inline,fmt=fmt,
+            colors = colors,inline_spacing=inline_spacing)#,manual=manual)
+            #rightside_up=rightside_up,use_clabeltext=use_clabeltext)
+
+def phenology_stats_v0(y,filter='gaussian',plot='no', nargout=2):
+    #chl,lat,lon=open_cci_v1('AQUA-USERS','area')
+    #chl =  np.ma.array (chl, mask=np.isnan(chl))
+    #sst,lat_sst,lon_sst=open_pathfinderv52('AQUA-USERS','area_'+region); print str(shape(sst))
+    #sst =  np.ma.array (sst, mask=np.isnan(sst))
+    #
+    #x = np.arange(366)+1
+    #y = [chl[192,96,:],sst[192,96,:]]
+    #y = [chl_ts,sst_ts]
+    #y = chl[185,173,:]
+    stats_values = np.zeros(19)*nan
+    #[bloom_max,bloom_when_max,bloom_range,bloom_0,bloom_end,bloom_duration,bloom_area,bloom_perimeter,nanmean(y)]
+    
+    if sum(np.isreal(np.shape(y)))==2: # check if there are two time series or one
+        if np.shape(y)[0]>np.shape(y)[1]: z = y[1].data; y = y[0].data
+        elif np.shape(y)[0]<np.shape(y)[1]:z = y[1].data; y = y[0].data
+    else: 
+        z=np.zeros(366)*nan;y = y.data;
+
+    # Calculate stats for Chl
+    if 366-sum(np.isnan(y))>=100:#366/2:# land < 300 obs
+        # pre filter bad data (negative values, and higher/lower than 3*std)
+        y=np.where(y<=0,nan,y)# figure();plot(y,'g-o')
+        y=np.where(y>stats.nanmean(y)+(3*stats.nanstd(y)),nan,y)# figure();plot(y,'g-o')
+
+        y_original = y
+        y = y
+        len_y = len(y)
+        x = np.arange(366)+1
+        
+        # clean NANs (gap fill)
+        if sum(np.isnan(y))>0:
+            if np.isnan(y[0]):y[0]=nanmean(np.concatenate([y[1:x[np.isfinite(y)][0]+1] , y[x[np.isfinite(y)][-1]-367:]]))
+            if np.isnan(y[-1:]):y[-1]=nanmean(np.concatenate([np.array([y[0]]),y[x[np.isfinite(y)][-1]-367:]]))
+            f = interpolate.interp1d(x[np.isfinite(y)], y[np.isfinite(y)], kind='linear')# kind = 'cubic'
+            y = f(x)
+        
+        # enlongate ts
+        y = np.array(list(y[len(y)/2:]) + list(y) + list(y[0:len(y)/2]))
+
+        # filter high freq (noise)
+        if filter == 'poly':# poly fit (number of vars = 30) --- NOT working!!
+            y = np.poly1d(np.polyfit(np.arange(len(y)), y, 30))
+        if filter == 'butter':# butterworth filter (order of the filter = 1, critical frequencies = 0.5)
+            a,b = signal.butter(1, 0.5);y = signal.filtfilt(a,b, y)
+        if filter == 'gaussian':# gaussian filter (Number of points in the output window = 10, standard deviation = 10)
+            b = signal.gaussian(7, 3); y = signal.filtfilt(b/b.sum(), [1.0], y)# gaussian filter
+        if filter == 'harmonic':# harmonic regression (by Eric) default of 3 cycles and one cycle is 365.25 days, i.e., 1 yr in days (K=3,L=365.25)
+            out, y, beta = deseason_harmonic(y)# 
+        
+        # shorten ts
+        y = y[len_y/2:len_y+(len_y/2)]
+
+        #center bloom peak in time series
+        x_center = x[y==y.max()]
+        if x[y==y.max()] <= (366/2):
+            y = np.array(list(y[int(x_center+(366/2)):]) + list(y[0:int(x_center+(366/2))]))
+        else:
+            y = np.array(list(y[int(x[y==y.max()]-(366/2)):]) + list(y[0:int(x[y==y.max()]-(366/2))]))
+        mean_y = stats.nanmean(y)
+        
+        # enlongate ts
+        y = np.array(list(y[len(y)/2:-1]) + list(y) + list(y[0:(len(y)/2)-1]))
+        x = np.arange(len(y))+1
+
+        # Stats calculus
+        bloom_max = np.nanmax(y)
+        bloom_when_max = x[y==y.max()]
+        bloom_range = np.nanmax(y) - mean_y
+        x_ = bloom_when_max
+        while y[x_]>mean_y:# bloom start
+            x_=x_ - 1
+            bloom_0 = x_ + 1
+        x_ = bloom_when_max
+        while y[x_]>mean_y:# bloom end
+            x_=x_ + 1
+            bloom_end = x_ + 1
+        bloom_duration = bloom_end - bloom_0    
+        bloom_area = 0
+        bloom_perimeter = 0
+        ox = bloom_0;oy = y[bloom_0]
+        for xx,yy in zip(x[bloom_0:bloom_end],y[bloom_0:bloom_end])[1:]:# bloom area and perimeter
+            bloom_area += (xx*oy-yy*ox)
+            bloom_perimeter += abs ((xx-ox) + (yy - oy)*1j)
+            ox,oy = xx,yy
+        bloom_area = bloom_area/2
+        
+        x_shift = bloom_when_max - x_center
+        bloom_when_max = bloom_when_max - x_shift
+        bloom_0 = bloom_0 - x_shift
+        if bloom_0<0: bloom_0 += 366
+        bloom_end = bloom_end - x_shift
+        if bloom_end>366: bloom_end -= 366
+        
+        # shorten ts
+        y = y[(len_y/2):len_y+(len_y/2)] # cut to 366 days
+        y = np.array(list(y[int(366/2-bloom_when_max)-1:])+list(y[0:int(366/2-bloom_when_max)-1]))# shift to right order
+        x = np.arange(len(y_original))+1
+        
+        # put final values in final array
+        stats_values[0] = bloom_max
+        stats_values[1] = bloom_when_max
+        stats_values[2] = bloom_range
+        stats_values[3] = bloom_0
+        stats_values[4] = bloom_end
+        stats_values[5] = bloom_duration
+        stats_values[6] = bloom_area
+        stats_values[7] = bloom_perimeter
+        stats_values[8] = nanmean(y)
+        stats_values[9] = max(np.append(y[1:],y[0])-y)
+        stats_values[10] = x[np.append(y[1:],y[0])-y==max(np.append(y[1:],y[0])-y)][0]
+    
+        #########################################
+        # Calculate SST stats
+        if 366-sum(np.isnan(z))>=30 and 366-sum(np.isnan(y))>=100:# if sst is valid, and , chl is valid
+            z_original = z;x_z = np.arange(366)
+            if sum(np.isnan(z))>0:# gap fill
+                if np.isnan(z[0]):z[0]=nanmean(np.concatenate([z[1:x[np.isfinite(z)][0]+1] , z[x[np.isfinite(z)][-1]-367:]]))
+                if np.isnan(z[-1:]):z[-1]=nanmean(np.concatenate([np.array([z[0]]),z[x[np.isfinite(z)][-1]-367:]]))
+                f = interpolate.interp1d(x_z[np.isfinite(z)], z[np.isfinite(z)], kind='linear')# kind = 'cubic'
+                z = f(x_z)
+            if filter == 'gaussian':# gaussian window (Number of points in the output window = 10, standard deviation = 10)
+                b = signal.gaussian(7, 3); z = signal.filtfilt(b/b.sum(), [1.0], z)# gaussian filter
+            elif filter == 'harmonic':# harmonic regression (by Eric) default of 3 cycles and one cycle is 365.25 days, i.e., 1 yr in days (K=3,L=365.25)
+                out, z, beta = deseason_harmonic(z)# 
+            elif filter == 'kaiser':# kaiser window filter (Number of points in the output window = 51, beta = 7)
+                b = signal.gaussian(60, 7); z = signal.filtfilt(b/b.sum(), [1.0], z)# gaussian filter
+                
+            # Calculate Stats
+            stats_values[11] = z[bloom_0-1]# . SST at initiation of growing period (M.-F. Racault et al. / Ecological Indicators 14 (2012) 152\u2013163)
+            stats_values[12] = z[bloom_end-1]# . SST at termination of growing period  (M.-F. Racault et al. / Ecological Indicators 14 (2012) 152\u2013163)
+            if bloom_0>bloom_end:# . Average SST over duration  (M.-F. Racault et al. / Ecological Indicators 14 (2012) 152\u2013163)
+                stats_values[13] = nanmean(np.append(z[bloom_0-1:-1],z[0:bloom_end-1],axis=0))
+            else:
+                stats_values[13] = nanmean(z[bloom_0-1:bloom_end-1])
+            stats_values[14] = z.min()# min
+            stats_values[15] = x_z[z==z.min()]# min when
+            stats_values[16] = z.max()# max
+            stats_values[17] = x_z[z==z.max()]# max when
+            stats_values[18] = z[x_z[np.append(y[1:],y[0])-y==max(np.append(y[1:],y[0])-y)]][0]
+    
+        ####################################
+        # PLOT
+        if plot=='yes':
+            f, ax1 = pl.subplots();pl.grid()
+
+            #ax1.title('lon' + str(round(lon[len(lon)/2,0],1))+' lat'+str(round(lat[len(lat)/2,0],1)))
+            ax1.plot(np.arange(len(y_original))+1,y_original,linewidth='1.75',color=[.5,1,.5])
+            #ax1.plot(y_butter,color = 'r')
+            #ax1.plot(y_poly(x),color = 'g')
+            #ax1.plot(np.arange(len(y_original))+1,np.append(y[1:],y[0])-y,color = 'k',linewidth=1)
+            ax1.plot(np.arange(len(y_original))+1,y,color = 'g',linewidth=3)
+            #ax1.plot(np.arange(len(y_original))+1,np.zeros(len(y_original))+mean_y,color = 'b')
+            ax1.axhline(y=mean_y,ls='--',c='k')
+            ax1.set_xlim(0,366)
+
+            # Plot vertical lines showing period considered to be bloom & cross where Chl max growth
+            ax1.plot(stats_values[10]+1,y[stats_values[10]],'ok',ms=5,mew=1)
+            ax1.axhline(y=mean_y,xmin=(bloom_0+1)/366.,xmax=(bloom_end-1)/366.,c='k',lw=3)
+
+            ax1.legend(('Chl obs', filter + ' fit', 'Chl mean','Max growth','bloom period'), loc='upper left')
+            ax1.set_xlabel('$days$')
+            ax1.set_ylabel('Chlorophyll-$a$ ($mg.m^{-3}$)')
+
+            if 366-sum(np.isnan(z_original))>0:
+                ax2 = ax1.twinx()
+                ax2.plot(np.arange(len(y_original))+1,z_original, color = [1,.5,.5],linewidth='1.75',label='SST obs')
+                if 366-sum(np.isnan(z_original))>100:
+                    ax2.plot(np.arange(len(y_original))+1,z, color = [1,0,0],linewidth='3',label= filter + ' fit')
+                ax2.set_ylabel('SST ($^oC$)')
+                ax2.legend(loc='upper right')
+                ax2.set_xlim(0,366)
+                
+                ax1.set_zorder(1)
+                ax1.patch.set_facecolor('none')
+
+        
+    else:
+        print 'LAND! (n < 300)'
+    
+    # Names of stats calculated
+    stats_name = ['Bloom maximum','Day of bloom maximum','Bloom range','Day of bloom start',
+            'Day of bloom end','Bloom duration','Bloom area','Bloom perimeter','Annual average',
+            'Chl faster growth (mg/m3/d)','Chl faster growth day','SST @ bloom 0',
+            'SST @ bloom end','SST average during bloom','SST min','SST min day',
+            'SST max','SST max day','SST@ Chl faster growth day']
+
+    if nargout <= 2: return stats_values,stats_name
+    if nargout >= 3: return stats_values,stats_name,y, ax1,ax2
+
+
+def check_missing_data(file_path = '/home/ci/Data/CCI-V1.0/daily/mapped/',
+                       year_1=1997,month_1=9,day_1=1,
+                       year_2=2012,month_2=7,day_2=31,
+                       t_res = 'daily'):# check_missing_data()
+ 
+ dates = time_line(t_res,datetime(year_1,month_1,day_1),datetime(year_2,month_2,day_2))
+ 
+ for i in xrange(len(dates)):
+    # i = 0
+    d=dates[i].strftime('%Y%m%d')
+    file_names=glob.glob(file_path + '*'+d+'*')
+    if file_names==[]:
+            print (d)
+
+def load_data_4_ts_analysis(datasets_name_1,datasets_name_2,year_1,month_1,day_1,year_2,month_2,day_2,t_res,
+                            stat=7, anomalies = 'no'):
+    #datasets_name_1=datasets_names[0]
+    #datasets_name_2=datasets_names[3]
+    #year_1=1997;month_1=9;day_1=1
+    #year_2=2013;month_2=12;day_2=31
+    #year_1=2003;month_1=1;day_1=1
+    #year_2=2007;month_2=12;day_2=31
+
+    dates=time_line(t_res,datetime(1997,9,day_1),datetime(2013,12,day_2))         
+    stats = load_vars(datasets_name_2,t_res,1997,9,day_1,2013,12,day_2,datasets_name_1,anomalies = anomalies)
+
+    # lower will be the first valid entry..
+    lower = bisect.bisect_left(dates, datetime(
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[0].year,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[0].month,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[0].day
+               ))
+ 
+    # upper will be the last valid entry..
+    upper = bisect.bisect_left(dates, datetime(
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[-1].year,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[-1].month,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[-1].day
+               ))
+    # or the earlier if set previously
+    if bisect.bisect_left(dates, datetime(year_1,month_1,day_1))>lower:
+        lower = bisect.bisect_left(dates, datetime(year_1,month_1,day_1))
+    if bisect.bisect_left(dates, datetime(year_2,month_2,day_2))<upper:
+        upper = bisect.bisect_left(dates, datetime(year_2,month_2,day_2))
+ 
+    dates = dates[lower:upper]
+    data = stats[stat][lower:upper] # choose stat
+    #data=data[lower:upper]
+    
+    return data,dates
+
+def findpeaks(x):
+    #x = Pxx
+    ind = x*np.nan
+    for i in np.arange(1,len(x)-1):
+        # i = 3
+        if x[i]>x[i+1] and x[i]>x[i-1]:
+            ind [i] = i
+    ind=np.isfinite(ind)
+    return ind
+
+def periodogram(x,sf=1, plot='no'):
+    # x = data
+    f, Pxx = signal.periodogram(x, sf, nfft=len(x),scaling='spectrum')
+
+    # red noise and 95 above
+    #r = pl.xcorr(x,x,'coeff')
+    pl.figure();
+    r = pl.acorr(x)
+    pl.close()
+    ar1 = r[1][-2]#r[1][r[0]==1]
+    ar2 = r[1][-1]#r[1][r[0]==2]
+    alpha = .5 * (ar1 + np.sqrt(ar2))
+    #rspec =  np.zeros(len(Pxx))
+    rspec = (1-alpha*alpha)/\
+            (1-2*alpha*\
+            np.cos(np.pi*(np.arange(1,len(Pxx)+1)-1)/\
+            len(Pxx))+alpha*alpha)
+    x_sum = sum(Pxx)
+    rspec_sum= sum(rspec)
+    rspec = (x_sum/rspec_sum) *  rspec
+    red_noise=rspec
+    sig_95=red_noise*2*.95
+    
+    if plot=='yes':
+        fig=pl.figure();ax=fig.gca()
+        ax.plot(np.log(f),f*Pxx,color=[.5,.5,.5],linewidth=4)
+        ax.plot(np.log(f),f*red_noise,'-k',linewidth=4)
+        ax.plot(np.log(f),f*sig_95,'--k',linewidth=4)
+        ax.set_xlabel('$log(f)$',size=20)
+        ax.set_ylabel('$f * PSD$',size=20)
+        pl.grid()
+
+        return f,Pxx,red_noise,sig_95,ax
+    else: return f,Pxx,red_noise,sig_95
+
+def anomalies(data,cycle=12):
+    climatologies = np.zeros((np.shape(data))) * np.nan
+    anomalies = np.zeros((np.shape(data))) * np.nan
+    
+    for i in np.arange(0,cycle):
+        climatologies [i::cycle] = nanmean(data[i::cycle])
+        anomalies[i::cycle] = data[i::cycle]-nanmean(data[i::cycle])
+
+    return anomalies, climatologies
+
+def open_pathfinderv52(t_res,d):## Open CCI-V0.9 nc file
+   # t_res='AQUA-USERS'; d='area_PT'
+   if t_res == 'AQUA-USERS':
+       p52_file_names=glob.glob('/home/ci/Data/Pathfinder-V5.2/'+t_res+'/*'+d+'*')
+   if t_res == 'monthly':
+       p52_file_names=glob.glob('/home/ci/Data/Pathfinder-V5.2/'+t_res+'/mapped/' + '*'+d+'*')
+   if t_res == 'daily':
+       p52_file_names=glob.glob('/home/ci/Data/Pathfinder-V5.2/'+t_res+'/mapped/' + '*_'+d+'_*')
+
+   if (not p52_file_names)==False:
+    print 'Pathfinder-V5.2 ' + d
+    fileobj = Dataset(p52_file_names[0])
+    if t_res == 'monthly':
+        sst = fileobj.variables['sst_q45'][:]
+        lat=fileobj.variables['latitude'][:] #  shape = (2160, 4320)
+        lon=fileobj.variables['longitude'][:] #  shape = (2160, 4320)
+    if (t_res == 'daily') or (t_res == 'AQUA-USERS'):
+        sst = fileobj.variables['sea_surface_temperature'][:]
+        sst_q = fileobj.variables['pathfinder_quality_level'][:]
+        lat=fileobj.variables['lat'][:] #  shape = (2160, 4320)
+        lon=fileobj.variables['lon'][:] #  shape = (2160, 4320)
+        sst = np.where(sst_q<4,nan,sst)
+        if t_res == 'daily':sst = np.squeeze(sst)-273.16
+    fileobj.close()
+    lon,lat=np.meshgrid(lon,lat)
+    if t_res == 'AQUA-USERS':
+        sst = sst.reshape(np.shape(lon)[0],np.shape(lat)[1],366)
+    else: sst = sst.reshape(np.shape(lon)[0],np.shape(lat)[1])
+
+   else:
+    sst=[];lat=[];lon=[]
+   return sst,lat,lon
+
+def plot_maps_sst(data1,name1,data2,name2,lat,lon,date,projection='cyl'):# unlike plot_map it plots the spatial comparioson of two maps
+    #data1=np.log10(data1);name1=dataset_name1;data2=data2;name2=dataset_name2;projection='cyl'
+    if projection == 'robin':
+        m = Basemap(projection='robin',lon_0=180,resolution='c')
+    elif projection == 'cyl':
+        m = Basemap(projection='cyl',llcrnrlat=-90,urcrnrlat=90,\
+            llcrnrlon=-180,urcrnrlon=180,resolution='c')
+    else: print 'not developed for other projections but robin and cyl '
+    x,y = m(lon,lat)
+    
+    if name1 == 'CCI-SST' or name1 == 'Pathfinder-V5.0' or name1 == 'Pathfinder-V5.2':
+        data_sst=data1;sst_name=name1
+        data_chl=data2;chl_name=name2
+    if name2 == 'CCI-SST' or name2 == 'Pathfinder-V5.0' or name2 == 'Pathfinder-V5.2':
+        data_sst=data2;sst_name=name2
+        data_chl=data1;chl_name=name1
+    del data1,data2,name1,name2
+
+    fig=pl.figure(37)#;pl.ion();pl.show()
+    fig.suptitle(date)
+    ax=fig.add_subplot(221);ax.set_title(sst_name)
+    im = m.scatter(x,y,c=data_sst,s=1,marker='s',edgecolors='none', cmap=pl.cm.spectral)# -binned
+    m.fillcontinents(color='.75')
+    m.drawmapboundary(fill_color='w')
+    m.drawcoastlines(linewidth=0.5)
+    m.drawparallels(np.arange(-90.,120.,30.))
+    m.drawmeridians(np.arange(-180.,420.,60.))
+    cbar=pl.colorbar(im,orientation='horizontal',aspect=40,shrink=0.75)
+    im.set_clim(-5,35)
+    cbar.set_ticks(tuple(list(np.arange(0,35,5))))
+    cbar.set_ticklabels([0,'',10,'',20,'',30])
+    cbar.set_label('Sea Surface Temperature $(^{o}C)$')
+
+    ax=fig.add_subplot(222);ax.set_title(chl_name)
+    im = m.scatter(x,y,c=data_chl,s=1,marker='s',edgecolors='none', cmap=pl.cm.spectral)# -binned
+    m.fillcontinents(color='.75')
+    m.drawmapboundary(fill_color='w')
+    m.drawcoastlines(linewidth=0.5)
+    m.drawparallels(np.arange(-90.,120.,30.))
+    m.drawmeridians(np.arange(-180.,420.,60.))
+    cbar=pl.colorbar(im,orientation='horizontal',aspect=40,shrink=0.75)
+    im.set_clim(np.log10(.01),np.log10(20))
+    cbar.set_ticks(tuple(list(np.log10(np.arange(.01,.1,.01)))+list(np.log10(np.arange(.1,1,.1)))+list(np.log10(np.arange(1,10,1)))+list(np.log10(np.arange(10,20,10)))))
+    cbar.set_ticklabels([0.01,'',0.03,'','','','','','',.1,'',.3,'','','','','','',1,'',3,'','','','','','',10])
+    cbar.set_label('Chlorophyll-$a$ concentration $(mg.m^{-3})$')
+    
+    fig.add_subplot(212)
+    data_sst = (data_sst-nanmean(data_sst))/np.std(data_sst[np.isfinite(data_sst)])
+    data_chl = (data_chl-nanmean(data_chl))/np.std(data_chl[np.isfinite(data_chl)])
+    data_sst = np.ma.masked_where(np.isnan(data_sst),data_sst)
+    data_chl = np.ma.masked_where(np.isnan(data_chl),data_chl)
+    c = abs(data_sst - data_chl)
+    c [(data_sst<0)*(data_chl<0)]=c [(data_sst<0)*(data_chl<0)]/\
+                             np.max(c [(data_sst<0)*(data_chl<0)])*100
+    c [(data_sst>0)*(data_chl<0)]=c [(data_sst>0)*(data_chl<0)]/\
+                             np.max(c [(data_sst>0)*(data_chl<0)])*100+100
+    c [(data_sst<0)*(data_chl>0)]=c [(data_sst<0)*(data_chl>0)]/\
+                             np.max(c [(data_sst<0)*(data_chl>0)])*100+200
+    c [(data_sst>0)*(data_chl>0)]=c [(data_sst>0)*(data_chl>0)]/\
+                             np.max(c [(data_sst>0)*(data_chl>0)])*100+300
+
+    # make colour bar
+    cdict = {'red':   ((0.0, 0.0, 1.0),(0.0625, .0, .0),(0.125, .0, .0),(0.25, .0, 1.0),(0.3125, 1.0, 1.0),(0.375, .6, .6),(0.50, .0, 1.0),(0.5625, .5, .5),(0.625, .4, .4),(0.75, .0, 1.0),(.8125, 1.0, 1.0),(.875, 1.0, 1.0),(1.0, .0, 1.0)),
+             'green': ((0.0, 0.0, 1.0),(0.0625, .5, .5),(0.125, .4, .4),(0.25, .0, 1.0),(0.3125, 0.8, 0.8),(0.375, .5, .5),(0.50, .0, 1.0),(0.5625, .8, .8),(0.625, .6, .6),(0.75, .0, 1.0),(.8125, 0.4, 0.4),(.875, 0.3, 0.3),(1.0, .0, 1.0)),
+             'blue':  ((0.0, 0.0, 1.0),(0.0625, .8, .8),(0.125, .6, .6),(0.25, .0, 1.0),(0.3125, 0.0, 0.0),(0.375, .0, .0),(0.50, .0, 1.0),(0.5625, .0, .0),(0.625, .0, .0),(0.75, .0, 1.0),(.8125, 0.3, 0.3),(.875, 0.2, 0.2),(1.0, .0, 1.0))}
+    my_cmap = matplotlib.colors.LinearSegmentedColormap('my_colormap',cdict,256)
+    
+    # plot
+    im = m.pcolormesh(x,y,c,cmap=my_cmap)
+    im.set_clim(0,400)
+
+    m.fillcontinents(color='.75')
+    m.drawmapboundary(fill_color='w')
+    m.drawcoastlines(linewidth=0.5)
+    m.drawparallels(np.arange(-90.,120.,30.))
+    m.drawmeridians(np.arange(-180.,420.,60.))
+
+    cbar=pl.colorbar(im,orientation='horizontal',aspect=40,shrink=0.75)
+    cbar.set_ticks((np.arange(0,400,25)))
+    cbar.set_ticklabels(['','','$\downarrow SST \downarrow Chl$','','','','$\uparrow SST \downarrow Chl$','','','','$\downarrow SST \uparrow Chl$','','','','$\uparrow SST \uparrow Chl$','','',])
+    cbar.set_label('Difference ($0-100\%$)')
+
+def plot_map(data,lat,lon,scale='chl',projection='cyl',cb_label='Chlorophyll-$a$ concentration $(mg.m^{-3})$',
+            cmap_=pl.cm.spectral,resolution='c'):
+    if np.shape(np.shape(lat))[0]==1:lon,lat=np.meshgrid(lon,lat)
+    if projection == 'robin':
+        m = Basemap(projection='robin',lon_0=180,resolution=resolution)
+    elif projection == 'cyl':
+        #lon [lon<0]=lon[lon<0]+360
+        m = Basemap(projection='cyl',llcrnrlat=nanmin(lat),urcrnrlat=nanmax(lat),\
+            llcrnrlon=nanmin(lon),urcrnrlon=nanmax(lon),resolution=resolution)
+    else: print 'not developed for other projections but robin and cyl '
+    
+    x,y = m(lon,lat)
+    fig=pl.figure()#;pl.ion();pl.show()
+    #im = m.scatter(x,y,c=data,s=1,marker='s',edgecolors='none', cmap=cmap_)# -binned
+    if scale=='chl':
+        im = m.pcolormesh(x,y,np.log10(data), cmap=cmap_)# -binned
+    else: im = m.pcolormesh(x,y,data, cmap=cmap_)# -binned
+    m.fillcontinents(color='.75')
+    m.drawmapboundary(fill_color='w')
+    m.drawcoastlines(linewidth=0.5)
+    m.drawparallels(np.arange(-90.,120.,30.))
+    m.drawmeridians(np.arange(-180.,420.,60.))
+    cbar=pl.colorbar(im,orientation='horizontal',aspect=40,shrink=0.75)
+    if scale=='chl':
+        im.set_clim(np.log10(.01),np.log10(60))
+        cbar.set_ticks(tuple(list(np.log10(np.arange(.01,.1,.01)))+list(np.log10(np.arange(.1,1,.1)))+list(np.log10(np.arange(1,10,1)))+list(np.log10(np.arange(10,60,10)))))
+        cbar.set_ticklabels([0.01,'',0.03,'','','','','','',.1,'',.3,'','','','','','',1,'',3,'','','','','','',10,'',30,'','',''])
+    else: 
+        im.set_clim(scale)
+        
+    cbar.set_label(cb_label)
+    
+    return m, cbar
+
+
+def plot_maps(data1,name1,data2,name2,lat,lon,date,projection='cyl',
+                label='Chlorophyll-$a$ $(mg.m^{-3})$',
+                scale=[np.log10(.01),np.log10(20)], anomalies = 'no'):# unlike plot_map it plots the spatial comparioson of two maps
+    #data1=np.log10(data1);name1=dataset_name1;data2=np.log10(data2);name2=dataset_name2;projection='cyl'
+    if projection == 'robin':
+        m = Basemap(projection='robin',lon_0=180,resolution='c')
+    elif projection == 'cyl':
+        m = Basemap(projection='cyl',llcrnrlat=-90,urcrnrlat=90,\
+            llcrnrlon=-180,urcrnrlon=180,resolution='c')
+    else: print 'not developed for other projections but robin and cyl '
+    x,y = m(lon,lat)
+    
+    fig=pl.figure(37)#;pl.ion();pl.show()
+    fig.suptitle(date)
+    ax=fig.add_subplot(221)
+    ax.set_title(name1)
+    if anomalies == 'yes':
+        im = m.scatter(x,y,c=data1,s=1,marker='s',edgecolors='none', cmap=pl.cm.seismic)
+        #im = m.scatter(x,y,c=data1,s=1,marker='s',edgecolors='none',cmap=cmap,norm=norm)#, cmap=pl.cm.seismic)# -binned
+    else: im = m.scatter(x,y,c=data1,s=1,marker='s',edgecolors='none', cmap=pl.cm.spectral)# -binned
+    m.fillcontinents(color='.75')
+    m.drawmapboundary(fill_color='w')
+    m.drawcoastlines(linewidth=0.5)
+    m.drawparallels(np.arange(-90.,120.,30.))
+    m.drawmeridians(np.arange(-180.,420.,60.))
+    cbar=pl.colorbar(im,orientation='horizontal',aspect=40,shrink=0.75)
+    im.set_clim(scale[0],scale[1])
+    if scale[0]==np.log10(.01) and scale[1]==np.log10(20):
+        cbar.set_ticks(tuple(list(np.log10(np.arange(.01,.1,.01)))+list(np.log10(np.arange(.1,1,.1)))+list(np.log10(np.arange(1,10,1)))+list(np.log10(np.arange(10,20,10)))))
+        cbar.set_ticklabels([0.01,'',0.03,'','','','','','',.1,'',.3,'','','','','','',1,'',3,'','','','','','',10])
+    elif anomalies == 'yes':
+         cbar.set_ticks([-.2,-.15,-.1,-.05,0,.05,.1,.15,.2])
+         cbar.set_ticklabels([-0.2,'',-0.1,'',0,'',0.1,'',0.2])
+    else:
+        cbar.set_ticks(tuple(list(np.arange(scale[0],scale[1],(scale[1]-scale[0])/3))))
+    cbar.set_label(label)
+
+    ax=fig.add_subplot(222)
+    ax.set_title(name2)
+    if anomalies == 'yes':
+        im = m.scatter(x,y,c=data2,s=1,marker='s',edgecolors='none', cmap=pl.cm.seismic)
+        #im = m.scatter(x,y,c=data2,s=1,marker='s',edgecolors='none',cmap=cmap,norm=norm)#, cmap=pl.cm.seismic)# -binned
+    else: im = m.scatter(x,y,c=data2,s=1,marker='s',edgecolors='none', cmap=pl.cm.spectral)# -binned
+    m.fillcontinents(color='.75')
+    m.drawmapboundary(fill_color='w')
+    m.drawcoastlines(linewidth=0.5)
+    m.drawparallels(np.arange(-90.,120.,30.))
+    m.drawmeridians(np.arange(-180.,420.,60.))
+    cbar=pl.colorbar(im,orientation='horizontal',aspect=40,shrink=0.75)
+    im.set_clim(scale[0],scale[1])
+    if scale[0]==np.log10(.01) and scale[1]==np.log10(20):
+        cbar.set_ticks(tuple(list(np.log10(np.arange(.01,.1,.01)))+list(np.log10(np.arange(.1,1,.1)))+list(np.log10(np.arange(1,10,1)))+list(np.log10(np.arange(10,20,10)))))
+        cbar.set_ticklabels([0.01,'',0.03,'','','','','','',.1,'',.3,'','','','','','',1,'',3,'','','','','','',10])
+    elif anomalies == 'yes':
+         cbar.set_ticks([-.2,-.15,-.1,-.05,0,.05,.1,.15,.2])
+         cbar.set_ticklabels([-0.2,'',-0.1,'',0,'',0.1,'',0.2])
+    else:
+        cbar.set_ticks(tuple(list(np.arange(scale[0],scale[1],(scale[1]-scale[0])/3))))
+    cbar.set_label(label)
+    
+    fig.add_subplot(212)
+    c=100*np.log10(np.power(10,data1)/np.power(10,data2))
+
+    # make colour bar
+    cmap = matplotlib.colors.ListedColormap(
+    [[0,0,.9],[.25,.25,1],[.0,.5,1],[.0,.75,1],[.5,1,1],
+    [1,1,.5],[1,.75,.0],[1,.5,.0],[1,.25,.25],[.9,0,0]])
+    cmap.set_under((0.,0.,.5))
+    cmap.set_over((.5,0.,0.))
+    bounds=[-100,-75,-50,-25,-10,0,10,25,50,75,100]
+    norm = matplotlib.colors.BoundaryNorm(bounds, cmap.N)
+
+    # plot image
+    im = m.scatter(x,y,c=c,
+                   s=1,marker='s',edgecolors='none',cmap=cmap,norm=norm)#, cmap=pl.cm.seismic)# -binned
+    m.fillcontinents(color='.75')
+    m.drawmapboundary(fill_color='w')
+    m.drawcoastlines(linewidth=0.5)
+    m.drawparallels(np.arange(-90.,120.,30.))
+    m.drawmeridians(np.arange(-180.,420.,60.))
+    
+    # plot colorbar
+    cbar = m.colorbar(im,location='bottom',pad="5%",
+                      norm=norm,
+                      boundaries=[-1000]+bounds+[1000],
+                      extend='both',
+                      #extendfrac='auto',
+                      ticks=bounds)
+    cbar.set_label('$\%$'+' ratio ('+name1+'/'+name2+')')
+    #print('\a')
+
+def open_pathfinder(t_res,d,v):## Open Pathfinder hdf file
+   #v = 'Pathfinder-V5.0'# 'Pathfinder-V5.2'
+   file_name = glob.glob('/home/ci/Data/'+\
+   v+'/'+t_res+'/mapped/'+ '*' + d+'*')
+   
+   if len(file_name)>0:
+    print 'Pathfinder-V5.0 ' + d
+    file_name=file_name[0]
+    hdffile = SD(file_name, SDC.READ)
+    #hdffile.attributes()
+    #hdffile.datasets()
+    lat_= hdffile.select('lat')
+    lat=lat_.get()
+    lon_ = hdffile.select('lon')
+    lon=lon_.get()
+    l3m_data = hdffile.select('bsst')# not sst but best (first) optimum interpolation (OI) of SST
+    sst=l3m_data.get().reshape([lat.size,lon.size])
+    
+    # Close file
+    l3m_data.endaccess()
+    lat_.endaccess()
+    lon_.endaccess()
+    hdffile.end()
+    del hdffile,l3m_data,lat_,lon_
+
+    # data pretreatment
+    sst = 0.075 * sst + -3
+    lon,lat = np.meshgrid(lon,lat)
+
+    #plot_map(sst,lat,lon,'x','cyl')
+   else:
+    sst=[];lat=[];lon=[]
+        
+   return sst,lat,lon
+
+def MI_diagram_average_all_missions(datasets,datasets_names,t_res,color,va,ha,
+ year_1,month_1,day_1,year_2,month_2,day_2,anomalies = 'no'):
+
+ dates=time_line(t_res,datetime(1997,9,day_1),datetime(2013,12,day_2))
+ lower = bisect.bisect_right(dates, datetime(year_1,month_1,day_1))
+ upper = bisect.bisect_left(dates, datetime(year_2,month_2,day_2))
+ 
+ if t_res=='daily': 
+     #d='%Y.%m.%d'
+     d='%m.%d'
+     bias_max = .2
+     rms_max = .4
+ else:
+     #d='%Y.%m'
+     d='%m'
+     bias_max = 0.1#15
+     rms_max = .2#3
+
+ ax=plot_taylor_diagram_template(1,'Normalised mutual information',
+                    'Normalised entropy',1.1)# std_ref
+ for n in datasets:
+  stats_ = load_vars(datasets_names[n],t_res,1997,9,day_1,2013,12,day_2,datasets_names[0],anomalies = anomalies)
+  #dates = dates[lower:upper]
+
+  ax.plot(np.arccos(stats.nanmean(stats_[25][lower:upper])),
+         stats.nanmean(stats_[22][lower:upper])/stats.nanmean(stats_[21][lower:upper]),
+            'o',color=color[n-1],mew=1.5,ms=10,zorder=10) # x-correlation,y-std_y
+  ax.text(np.arccos(stats.nanmean(stats_[25][lower:upper])),
+          stats.nanmean(stats_[22][lower:upper])/stats.nanmean(stats_[21][lower:upper]),
+          ' '+''+datasets_names[n]+'   ',fontsize=12,color='k',
+          va=va[n-1],ha=ha[n-1])
+          #' '+datasets_names[n]+' ',fontsize=16,color='k',
+          #va=va[n-1],ha=ha[n-1],weight='bold')
+          
+ ## SAVE
+ #pl.savefig(t_res + '_MID_missions_'+datasets_names[0]+' vs all'+'_'+str(year_1)+'_'+str(year_2)+'.png',bbox_inches='tight');pl.close()
+ #pl.savefig(t_res + '_MID_missions_'+datasets_names[0]+' vs all'+'_'+str(year_1)+'_'+str(year_2)+'.tiff',bbox_inches='tight',dpi=300);pl.close()
+
+def MI_diagram_1_mission_by_time(datasets_name_1,datasets_name_2,t_res,max_scale,
+ year_1,month_1,day_1,year_2,month_2,day_2,anomalies = 'no'):
+ #datasets_name_1='CCI-V0.95';datasets_name_2='GC-AVW';t_res='monthly'
+ #year_1=1997;month_1=9;day_1=1;year_2=2013;month_2=12;day_2=31
+ # max_scale=1.1
+
+ dates=time_line(t_res,datetime(1997,9,day_1),datetime(2013,12,day_2))         
+ stats = load_vars(datasets_name_2,t_res,1997,9,day_1,2013,12,day_2,datasets_name_1,anomalies = anomalies)
+
+ # lower will be the first valid entry..
+ lower = bisect.bisect_left(dates, datetime(
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[0].year,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[0].month,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[0].day
+               ))
+ 
+ # upper will be the last valid entry..
+ upper = bisect.bisect_left(dates, datetime(
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[-1].year,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[-1].month,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats[2][:])==False])[-1].day
+               ))
+ # or the earlier if set previously
+ if bisect.bisect_left(dates, datetime(year_1,month_1,day_1))>lower:
+  lower = bisect.bisect_left(dates, datetime(year_1,month_1,day_1))
+ if bisect.bisect_left(dates, datetime(year_2,month_2,day_2))<upper:
+  upper = bisect.bisect_left(dates, datetime(year_2,month_2,day_2))
+ 
+ dates = dates[lower:upper+1]
+
+ if t_res=='daily': 
+     #d='%Y.%m.%d'
+     d='%m.%d'
+     bias_max = .2
+     rms_max = .4
+ else:
+     #d='%Y.%m'
+     d='%m'
+     bias_max = 0.1#15
+     rms_max = .2#3
+
+ ax=plot_taylor_diagram_template(1,'Normalised Mutual Information',
+                    'Normalised Entropy',max_scale)# std_ref
+ ax.plot(np.arccos(abs(nanmean(stats[25][lower:upper+1]))),
+         nanmean(stats[22][lower:upper+1])/nanmean(stats[21][lower:upper+1]),
+        'ko',mew=5,ms=7,zorder=10)
+ ax.plot(np.arccos(abs(nanmean(stats[25][lower:upper+1]))),
+         nanmean(stats[22][lower:upper+1])/nanmean(stats[21][lower:upper+1]),
+        'rx',mew=1.5,ms=7,zorder=11)
+ img=ax.scatter(
+             np.arccos(abs(stats[25][lower:upper+1])),
+             stats[22][lower:upper+1]/stats[21][lower:upper+1],
+             marker='o',s=40,
+             c=pl.date2num(dates),cmap=pl.cm.get_cmap('jet'))
+ cbar=pl.colorbar(img,pad=.05,orientation='vertical',aspect=40,shrink=0.75)
+ cbar.set_ticks(pl.date2num(dates[0:-1:12]))
+ #cbar.set_ticklabels([dates[0].year,'','',dates[0].year+3,'','',dates[0].year+6,
+ #                     '','',dates[0].year+9,'','',dates[0].year+12,
+ #                     '','',dates[0].year+15,''])
+ cbar.set_ticklabels([dates[0].year,'',dates[0].year+2,'',dates[0].year+4,
+                      '',dates[0].year+6,'',dates[0].year+8,
+                      '',dates[0].year+10,'',dates[0].year+12,
+                      '',dates[0].year+14,'',dates[0].year+16])
+ ax.plot(
+         np.arccos(abs(stats[25][lower:upper+1])),
+         stats[22][lower:upper+1]/stats[21][lower:upper+1],
+         '-k',linewidth=.2,mew=1.5,ms=7,zorder=0)
+
+ pl.title(datasets_name_1+' vs '+datasets_name_2+' ('+str(year_1)+' to '+str(year_2)+')',
+          horizontalalignment='left')
+
+ ## SAVE
+ #pl.savefig(t_res + '_MID_'+datasets_name_1+' vs '+datasets_name_2+'_'+str(year_1)+'_'+str(year_2)+'.png',bbox_inches='tight');pl.close()
+
+def taylor_diagram_average_all_missions(datasets,datasets_names,t_res,color,va,ha,
+ year_1,month_1,day_1,year_2,month_2,day_2, anomalies = 'no'):
+
+ dates=time_line(t_res,datetime(1997,9,day_1),datetime(2013,12,day_2))
+ lower = bisect.bisect_right(dates, datetime(year_1,month_1,day_1))
+ upper = bisect.bisect_left(dates, datetime(year_2,month_2,day_2))
+ 
+ if t_res=='daily': 
+     #d='%Y.%m.%d'
+     d='%m.%d'
+     bias_max = .2
+     rms_max = .4
+ else:
+     #d='%Y.%m'
+     d='%m'
+     bias_max = 0.1#15
+     rms_max = .2#3
+
+ ax=plot_taylor_diagram_template(1,'Correlation coefficient',
+                  'Normalised standard deviation',2.5)# std_ref
+ for n in datasets:
+  stats_ = load_vars(datasets_names[n],t_res,1997,9,day_1,2013,12,day_2,datasets_names[0],anomalies=anomalies)
+  #dates = dates[lower:upper]
+
+  ax.plot(np.arccos(abs(stats.nanmean(stats_[2][lower:upper]))),
+         stats.nanmean(stats_[15][lower:upper])/stats.nanmean(stats_[16][lower:upper]),
+            'o',color=color[n-1],mew=1.5,ms=10,zorder=10) # x-correlation,y-std_y
+  ax.text(np.arccos(abs(stats.nanmean(stats_[2][lower:upper]))),
+          stats.nanmean(stats_[15][lower:upper])/stats.nanmean(stats_[16][lower:upper]),
+          ' '+''+datasets_names[n]+' ',fontsize=12,color='k',
+          va=va[n-1],ha=ha[n-1])
+          #' '+datasets_names[n]+' ',fontsize=16,color='k',
+          #va=va[n-1],ha=ha[n-1],weight='bold')
+ ## SAVE
+ #pl.savefig(t_res + '_TaylorD_missions_'+datasets_names[0]+' vs all'+'_'+str(year_1)+'_'+str(year_2)+'.png',bbox_inches='tight');pl.close()
+ #pl.savefig(t_res + '_TaylorD_missions_'+datasets_names[0]+' vs all'+'_'+str(year_1)+'_'+str(year_2)+'.tiff',bbox_inches='tight',dpi=300);pl.close()
+
+
+def taylor_diagram_1_mission_by_time(datasets_name_1,datasets_name_2,t_res,max_scale,
+ year_1,month_1,day_1,year_2,month_2,day_2,anomalies = 'no'):
+ 
+ #datasets_name_1='CCI-V0.95';datasets_name_2='Pathfinder-V5.0';t_res='monthly'
+ #year_1=1997;month_1=9;day_1=1;year_2=2013;month_2=12;day_2=31
+ # max_scale=3.5
+ 
+ dates=time_line(t_res,datetime(1997,9,day_1),datetime(2013,12,day_2))         
+ stats_ = load_vars(datasets_name_2,t_res,1997,9,day_1,2013,12,day_2,datasets_name_1,anomalies=anomalies)
+ 
+  # lower will be the first valid entry..
+ lower = bisect.bisect_left(dates, datetime(
+               pl.num2date(pl.date2num(dates)[np.isnan(stats_[2][:])==False])[0].year,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats_[2][:])==False])[0].month,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats_[2][:])==False])[0].day
+               ))
+ 
+ # upper will be the last valid entry..
+ upper = bisect.bisect_left(dates, datetime(
+               pl.num2date(pl.date2num(dates)[np.isnan(stats_[2][:])==False])[-1].year,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats_[2][:])==False])[-1].month,
+               pl.num2date(pl.date2num(dates)[np.isnan(stats_[2][:])==False])[-1].day
+               ))
+ # or the earlier if set previously
+ if bisect.bisect_left(dates, datetime(year_1,month_1,day_1))>lower:
+  lower = bisect.bisect_left(dates, datetime(year_1,month_1,day_1))
+ if bisect.bisect_left(dates, datetime(year_2,month_2,day_2))<upper:
+  upper = bisect.bisect_left(dates, datetime(year_2,month_2,day_2))
+ 
+ dates = dates[lower:upper+1]
+
+ if datasets_name_2 == 'Pathfinder-V5.0' or datasets_name_2 == 'Pathfinder-V5.2':
+   max_scale=max_scale
+
+ elif t_res=='daily': 
+     #d='%Y.%m.%d'
+     d='%m.%d'
+     bias_max = .2
+     rms_max = .4
+ else:
+     #d='%Y.%m'
+     d='%m'
+     bias_max = 0.1#15
+     rms_max = .2#3
+
+ ax=plot_taylor_diagram_template(1,'Absolute correlation coefficient','Normalised standard deviation',
+                                 max_scale)# std_ref
+ ax.plot(np.arccos(abs(stats.nanmean(stats_[2][lower:upper+1]))),
+         stats.nanmean(stats_[15][lower:upper+1])/stats.nanmean(stats_[16][lower:upper+1]),
+        'ko',mew=5,ms=7,zorder=10)
+ ax.plot(np.arccos(abs(stats.nanmean(stats_[2][lower:upper+1]))),
+         stats.nanmean(stats_[15][lower:upper+1])/stats.nanmean(stats_[16][lower:upper+1]),
+        'rx',mew=1.5,ms=7,zorder=11)
+ img=ax.scatter(
+             np.arccos(abs(stats_[2][lower:upper+1])),
+             stats_[15][lower:upper+1]/stats_[16][lower:upper+1],
+             marker='o',s=40,
+             c=pl.date2num(dates),cmap=pl.cm.get_cmap('jet'))
+            
+ cbar=pl.colorbar(img,pad=.05,orientation='vertical',aspect=40,shrink=0.75)
+ cbar.set_ticks(pl.date2num(dates[0:-1:12]))
+ #cbar.set_ticklabels([dates[0].year,'','',dates[0].year+3,'','',dates[0].year+6,
+ #                     '','',dates[0].year+9,'','',dates[0].year+12,
+ #                     '','',dates[0].year+15,''])
+ cbar.set_ticklabels([dates[0].year,'',dates[0].year+2,'',dates[0].year+4,
+                      '',dates[0].year+6,'',dates[0].year+8,
+                      '',dates[0].year+10,'',dates[0].year+12,
+                      '',dates[0].year+14,'',dates[0].year+16])
+ ax.plot(
+         np.arccos(stats_[2][lower:upper+1]),
+         stats_[15][lower:upper+1]/stats_[16][lower:upper+1],
+         '-k',linewidth=.2,mew=1.5,ms=7,zorder=0)
+
+ 
+ pl.title(datasets_name_1+' vs '+datasets_name_2+' ('+str(year_1)+' to '+str(year_2)+')',
+          horizontalalignment='left')
+
+ ## SAVE
+ #pl.savefig(t_res + '_TaylorD_'+datasets_name_1+' vs '+datasets_name_2+'_'+
+            #str(year_1)+'_'+str(year_2)+'.png',bbox_inches='tight');pl.close()
+ #pl.savefig(t_res + '_TaylorD_'+datasets_name_1+' vs '+datasets_name_2+'_'+
+ #           str(year_1)+'_'+str(year_2)+'.tiff',bbox_inches='tight',dpi=300);pl.close()
+          
+
+def target_diagram_average_all_missions(
+ datasets,datasets_names,t_res,color,
+ year_1,month_1,day_1,year_2,month_2,day_2):
+ # datasets = missions
+ #year_1=1997;month_1=9;day_1=1;year_2=2013;month_2=12;day_2=31
+
+ dates=time_line(t_res,datetime(1997,9,day_1),datetime(2013,12,day_2))
+ lower = bisect.bisect_right(dates, datetime(year_1,month_1,day_1))
+ upper = bisect.bisect_left(dates, datetime(year_2,month_2,day_2))
+ 
+ dates = dates[lower:upper+1]
+
+ if 9 in datasets or 10 in datasets==10:
+   ax=plot_target_diagram_template(.2,2.2,np.arange(0,4,.5),\
+                                   np.arange(0,2.2+.001,.5))
+
+ elif t_res=='daily': 
+      #d='%Y.%m.%d'
+      d='%m.%d'
+      bias_max = .1
+      rms_max = .2
+      ax=plot_target_diagram_template(bias_max,rms_max)
+
+ else:
+      #d='%Y.%m'
+      d='%m'
+      bias_max = .06
+      rms_max = .18
+      ax=plot_target_diagram_template(bias_max,rms_max)
+
+ for n in datasets:#n=1
+  stats_ = load_vars(datasets_names[n],t_res,1997,9,day_1,2013,12,day_2,datasets_names[0])
+  #dates = dates[lower:upper]
+  
+  ax.plot(stats.nanmean(stats_[38][lower:upper]),stats.nanmean(stats_[6][lower:upper]),
+          'o',color=color[n-1],mew=1.5,ms=10,zorder=10) # x-correlation,y-std_y
+  ax.text(stats.nanmean(stats_[38][lower:upper]),stats.nanmean(stats_[6][lower:upper]),
+          ' '+''+datasets_names[n]+' ',fontsize=12,color='k',va='top')
+          #' '+datasets_names[n]+' ',fontsize=16,color='k',
+          #va=va[n-1],ha=ha[n-1],weight='bold')
+          
+ ## SAVE
+ #pl.savefig(t_res + '_TargetD_missions_'+datasets_names[0]+' vs all'+'_'+str(year_1)+'_'+str(year_2)+'.png',bbox_inches='tight');pl.close()
+ pl.savefig(t_res + '_TargetD_missions_'+datasets_names[0]+' vs all'+'_'+str(year_1)+'_'+str(year_2)+'.tiff',bbox_inches='tight',dpi=300);pl.close()
+
+def target_diagram_1_mission_by_time(datasets_name_1,datasets_name_2,t_res,
+ year_1,month_1,day_1,year_2,month_2,day_2,anomalies = 'no'):
+ #datasets_name_1='CCI-V1.0';datasets_name_2='SeaWiFS';t_res='monthly'
+ #year_1=1997;month_1=9;day_1=1;year_2=2013;month_2=12;day_2=31
+
+  dates=time_line(t_res,datetime(1997,9,day_1),datetime(2013,12,day_2))         
+  stats_ = load_vars(datasets_name_2,t_res,1997,9,day_1,2013,12,day_2,datasets_name_1,anomalies=anomalies)
+  
+  # lower will be the first valid entry..
+  lower = bisect.bisect_left(dates, datetime(
+                pl.num2date(pl.date2num(dates)[np.isnan(stats_[6][:])==False])[0].year,
+                pl.num2date(pl.date2num(dates)[np.isnan(stats_[6][:])==False])[0].month,
+                pl.num2date(pl.date2num(dates)[np.isnan(stats_[6][:])==False])[0].day
+                ))
+  
+  # upper will be the last valid entry..
+  upper = bisect.bisect_left(dates, datetime(
+                pl.num2date(pl.date2num(dates)[np.isnan(stats_[6][:])==False])[-1].year,
+                pl.num2date(pl.date2num(dates)[np.isnan(stats_[6][:])==False])[-1].month,
+                pl.num2date(pl.date2num(dates)[np.isnan(stats_[6][:])==False])[-1].day
+                ))
+  # or the earlier if set previously
+  if bisect.bisect_left(dates, datetime(year_1,month_1,day_1))>lower:
+   lower = bisect.bisect_left(dates, datetime(year_1,month_1,day_1))
+  if bisect.bisect_left(dates, datetime(year_2,month_2,day_2))<upper:
+   upper = bisect.bisect_left(dates, datetime(year_2,month_2,day_2))
+  
+  dates = dates[lower:upper+1]
+ 
+  if datasets_name_2 == 'Pathfinder-V5.0' or datasets_name_2 == 'Pathfinder-V5.2':
+   ax=plot_target_diagram_template(.2,2.2,np.arange(0,4,.5),\
+                                   np.arange(0,2.2+.001,.5))
+
+  elif t_res=='daily': 
+      #d='%Y.%m.%d'
+      d='%m.%d'
+      bias_max = .2
+      rms_max = .4
+      ax=plot_target_diagram_template(bias_max,rms_max)
+
+  else:
+      #d='%Y.%m'
+      d='%m'
+      bias_max = .06
+      rms_max = .18
+      ax=plot_target_diagram_template(bias_max,rms_max)
+      
+  ax.plot(stats.nanmean(stats_[38][lower:upper]),stats.nanmean(stats_[6][lower:upper]),
+         'ko',mew=5,ms=7,zorder=10)
+  ax.plot(stats.nanmean(stats_[38][lower:upper]),stats.nanmean(stats_[6][lower:upper]),
+         'rx',mew=1.5,ms=7,zorder=11)
+  img=ax.scatter(stats_[38][lower:upper+1],stats_[6][lower:upper+1],marker='o',
+              s=40,c=pl.date2num(dates),cmap=pl.cm.get_cmap('jet'))
+              
+  cbar=pl.colorbar(img,pad=.01,orientation='h',aspect=40,shrink=0.75)
+  cbar.set_ticks(pl.date2num(dates[0:-1:12]))
+  cbar.set_ticklabels([dates[0].year,'','',dates[0].year+3,'','',dates[0].year+6,
+                       '','',dates[0].year+9,'','',dates[0].year+12,
+                       '','',dates[0].year+15,''])
+  
+  ax.plot(stats_[38][lower:upper+1],stats_[6][lower:upper+1],
+         '-k',linewidth=.2,mew=1.5,ms=7,zorder=0)
+  #ax.text(stats_[38][lower],stats_[6][lower],
+  #       dates[lower].strftime('%Y.%m'),
+  #       fontsize=12,zorder=12,va='center',ha='right')
+  #ax.text(stats_[38][upper],stats_[6][upper],
+  #       '$\leftarrow$ '+dates[upper].strftime('%Y.%m'),
+  #       fontsize=12,zorder=12,va='center',ha='left')
+  
+  ## formula Du² = D² + B²
+  #ax.plot(np.sqrt(stats.nanmean(stats_[5][lower:upper])**2-stats.nanmean(stats_[6][lower:upper])**2),stats.nanmean(stats_[6][lower:upper]),
+  #       'ro',linewidth=2,zorder=10)
+  #ax.plot(np.sqrt(stats_[5][lower:upper]**2-stats.nanmean(stats_[6][lower:upper])**2),stats_[6][lower:upper],
+  #       'xk',mew=1.5,ms=7,zorder=0)
+  #ax.text(np.sqrt(stats_[5][:]**2-stats.nanmean(stats_[6][:])**2),stats_[6][:],
+  #        dates[:].strftime(d),fontsize=9)
+  
+  # Calculating mean distance from mean point
+  mean_distance=np.round(stats.nanmean(np.sqrt((stats_[38][lower:upper+1]-stats.nanmean(stats_[38][lower:upper]))**2 + 
+  (stats_[6][lower:upper+1]-stats.nanmean(stats_[6][lower:upper]))**2)),decimals=4)
+  
+  pl.title(datasets_name_1+' vs '+datasets_name_2+' ('+str(year_1)+' to '+
+           str(year_2)+') $d=' + str(mean_distance)+'$')
+  pl.savefig(t_res + '_TargetD_'+datasets_name_1+' vs '+datasets_name_2+'_'+
+             str(year_1)+'_'+str(year_2)+'.png',bbox_inches='tight');pl.close()
+ 
+def stat_name(stat):
+ name=[]
+ if stat==0:name='Slope'
+ elif stat==1:name='Intercept'
+ elif stat==2:name='Coeficient of correlation'
+ elif stat==3:name='p-value'
+ elif stat==4:name='Standard error'
+ elif stat==5:name='RMS'
+ elif stat==6:name='Bias'
+ elif stat==7:name='Mean ratio'
+ elif stat==8:name='Mean difference (%)'
+ elif stat==9:name='Median difference (%)'
+ elif stat==10:name='range_x'
+ elif stat==11:name='Range'
+ elif stat==12:name='Mean_x'
+ elif stat==13:name='Mean'
+ elif stat==14:name='Ratio of means'
+ elif stat==15:name='STD_x'
+ elif stat==16:name='STD'
+ elif stat==17:name='Ratio of STD'
+ elif stat==18:name='N'
+ elif stat==19:name='mean(log)_x'
+ elif stat==20:name='mean(log)'
+ elif stat==21:name='Entropy_x'
+ elif stat==22:name='Entropy'
+ elif stat==23:name='Joint Entropy'
+ elif stat==24:name='Mutual Information'
+ elif stat==25:name='Normalised Mutual Information'
+ elif stat==26:name='Minimum_x'
+ elif stat==27:name='Minimum'
+ elif stat==28:name='Maximum_x'
+ elif stat==29:name='Maximum'
+ elif stat==30:name='1% Percentil_x'
+ elif stat==31:name='5% Percentil_x'
+ elif stat==32:name='95% Percentil_x'
+ elif stat==33:name='99% Percentil_x'
+ elif stat==34:name='1% Percentil'
+ elif stat==35:name='5% Percentil'
+ elif stat==36:name='95% Percentil'
+ elif stat==37:name='99% Percentil'
+ elif stat==38:name='RMS$_u$'
+ return name
+
+## plot comparison stats along time with average stat on title
+def plot_stats(datasets,stat,datasets_names,t_res,color,
+ year_1,month_1,day_1,year_2,month_2,day_2,seasonality='original',save_='yes',anomalies='no',dpi=200,filetype='png'):
+ # seasonality = remove seasonality or not?
+ 
+ if stat not in [10,12,15,19,21,26,28,30,31,32,33]: #stat+=1
+  name=stat_name(stat)
+ 
+  fig=pl.figure();ax=fig.gca()
+ 
+  for n in datasets:
+   #n=4
+   plot_stats_(datasets_names[0],datasets_names[n],t_res,
+              year_1,month_1,day_1,year_2,month_2,day_2,
+              color[n-1],stat,ax,seasonality,anomalies)
+
+  if stat in [11,13,16,20,22,27,29]:
+   plot_stats_(datasets_names[0],datasets_names[datasets[0]],t_res,
+              year_1,month_1,day_1,year_2,month_2,day_2,
+              color[-1],stat-1,ax,seasonality,anomalies)
+  elif stat in np.arange(30,38):
+   plot_stats_(datasets_names[0],datasets_names[datasets[0]],t_res,
+              year_1,month_1,day_1,year_2,month_2,day_2,
+              color[-1],stat-4,ax,seasonality,anomalies)
+  
+  #pl.ylim([0.,1])
+  pl.ylabel(name)
+  #pl.grid()
+  leg=ax.legend(loc='upper center', ncol=3, bbox_to_anchor=(0.5, 1.22))
+  leg.get_frame().set_alpha(0)
+ 
+  if save_ == 'yes':
+      pl.savefig(t_res + '_'+name+'_'+str(year_1)+'_'+str(year_2)+'.'+filetype,bbox_extra_artists=(leg,),bbox_inches='tight',dpi=dpi);pl.close()
+ 
+def plot_stats_(
+ datasets_name_1,datasets_name_2,
+ t_res,
+ year_1,month_1,day_1,year_2,month_2,day_2,
+ color,
+ stat,ax,seasonality,anomalies='no'):
+
+ dates=time_line(t_res,datetime(1997,9,day_1),datetime(2013,12,day_2))         
+
+ if t_res=='daily':lnwidth=1
+ else:lnwidth=2
+
+ if stat in [10,12,15,19,21,26,28,30,31,32,33]:
+  label=datasets_name_1
+ elif stat in [11,13,16,20,22,27,29,34,35,36,37]:
+  label=datasets_name_2
+ else: label=datasets_name_1+' vs '+datasets_name_2
+   
+ #stats_ = load_vars(datasets_name_2,t_res,year_1,month_1,day_1,year_2,month_2,day_2,datasets_name_1)
+ stats_ = load_vars(datasets_name_2,t_res,1997,9,day_1,2013,12,day_2,datasets_name_1,anomalies)
+ 
+ lower = bisect.bisect_right(dates, datetime(year_1,month_1,day_1))
+ upper = bisect.bisect_left(dates, datetime(year_2,month_2,day_2))
+ stats_ = stats_[stat][lower:upper]
+ dates = dates[lower:upper]
+ 
+ if seasonality != 'original':
+     stats_,c= anomalies(stats_,seasonality)
+ 
+ ax.plot_date(dates,stats_.T,'-',color=color,linewidth=lnwidth,
+  label=label+' ('+str(round(stats.nanmean(stats_),3))+')')
+ ax.xaxis.set_major_locator(matplotlib.dates.YearLocator(2))
+ ax.xaxis.set_minor_locator(matplotlib.dates.MonthLocator())
+ #pl.axhline(y=stats.nanmean(r_value),linewidth=1,color=color[n])
+
+def open_cci_sst(t_res,d):## Open CCI-SST nc file
+   # t_res='daily'; d='199109'
+   cci_file_names=glob.glob('/home/ci/Data/CCI-SST/'+t_res+'/mapped/' + '*'+d+'*')
+   if (not cci_file_names)==False:
+    print cci_file_names[0] + ' ' + d
+    fileobj = Dataset(cci_file_names[0])
+    cci = fileobj.variables['analysed_sst'][:] #  shape = (4320, 8640)
+    if t_res == 'daily':cci = np.squeeze(cci)-273.15
+    #cci=np.where((cci>=271.0) | (cci<=271.0),np.nan,cci) # transform NAN flag to NANs
+    cci_lat=fileobj.variables['lat'][:] #  shape = (4320, 8640)
+    cci_lon=fileobj.variables['lon'][:] #  shape = (4320, 8640)
+    fileobj.close()
+   else:
+    cci=[];cci_lat=[];cci_lon=[]
+   if cci!=[]:
+       cci_lon,cci_lat=np.meshgrid(cci_lon,cci_lat)
+       cci=cci.reshape(cci_lat.shape[0],cci_lon.shape[1])
+       #cci=np.flipud(cci)
+       #cci=np.where(cci<.01, .01, cci)
+       #cci=np.where(cci>100, 100, cci)
+   return cci,cci_lat,cci_lon
+
+def open_cci_v1(t_res,d,var='chlor_a'):## Open CCI-V1.0 nc file
+   # t_res='AQUA-USERS'; d='for_PT'
+   if t_res=='AQUA-USERS':
+          cci_file_names=glob.glob('/home/adcouto/Data/CCI-V1.0/'+t_res+'/' + '*'+d+'*')
+          #cci_file_names=glob.glob('/home/LaCie/Data_OCCCI/daily_mapped/'+t_res+'/' + '*'+d+'*')
+   else: cci_file_names=glob.glob('/home/adcouto/Data/CCI-v1.0/'+t_res+'/mapped/' +d)
+         #cci_file_names=glob.glob('/home/adcouto/Data/CCI-V1.0/'+t_res+'/mapped/' + '*'+d+'*')
+            
+   if (not cci_file_names) == False:
+    print cci_file_names[0] + ' ' + d
+    fileobj = Dataset(cci_file_names[0])
+    cci = fileobj.variables[var][:]
+    cci=np.where((cci==-32767.0) | (cci==0),np.nan,cci)
+    cci_lat=fileobj.variables['lat'][:] 
+    cci_lon=fileobj.variables['lon'][:]
+    fileobj.close()
+   else:
+    cci=[];cci_lat=[];cci_lon=[]
+   if cci!=[]:
+       if t_res=='AQUA-USERS':
+           cci=cci.reshape(np.shape(cci_lat)[0],np.shape(cci_lon)[0],
+            np.shape(cci)[0]/(np.shape(cci_lon)[0]*np.shape(cci_lat)[0]))
+           cci_lon,cci_lat=np.meshgrid(cci_lon,cci_lat)
+       else:
+           cci_lon,cci_lat=np.meshgrid(cci_lon,-cci_lat)
+           cci=cci.reshape(cci_lat.shape[0],cci_lon.shape[1])
+           cci=np.flipud(cci)
+           #cci=np.flipud(cci.T)
+           #cci=np.where(cci<.01, .01, cci)
+           #cci=np.where(cci>100, 100, cci)
+   return cci,cci_lat,cci_lon
+
+def open_cci_v095(t_res,d):## Open CCI-V0.9 nc file
+   # t_res='monthly'; d='200301'
+   cci_file_names=glob.glob('/home/ci/Data/CCI-V0.95/'+t_res+'/mapped/' + '*'+d+'*')
+   if (not cci_file_names)==False:
+    print 'CCI-V0.95 ' + d
+    fileobj = Dataset(cci_file_names[0])
+    cci = fileobj.variables['chlor_a'][:] #  shape = (2160, 4320)
+    cci=np.where((cci==-32767.0) | (cci==0),np.nan,cci) # transform NAN flag to NANs
+    cci_lat=fileobj.variables['latitude'][:] #  shape = (2160, 4320)
+    cci_lon=fileobj.variables['longitude'][:] #  shape = (2160, 4320)
+    fileobj.close()
+   else:
+    cci=[];cci_lat=[];cci_lon=[]
+   if cci!=[]:
+       cci_lon,cci_lat=np.meshgrid(cci_lon,-cci_lat)
+       cci=np.flipud(cci)
+       cci=np.where(cci<.01, .01, cci)
+       cci=np.where(cci>100, 100, cci)
+   return cci,cci_lat,cci_lon
+
+def open_cci_v09(t_res,d):## Open CCI-V0.9 nc file
+   # t_res='daily'; d='20030824'
+   cci_file_names=glob.glob('/home/ci/Data/CCI-V0.9/'+t_res+'/binned/' + '*'+d+'*')
+   if (not cci_file_names)==False:
+    print cci_file_names[0] + ' ' + d
+    fileobj = Dataset(cci_file_names[0])
+    cci = fileobj.variables['chlor_a'][:] #  shape = (2160, 4320)
+    cci=np.where((cci==-32767.0) | (cci==0),np.nan,cci) # transform NAN flag to NANs
+    cci_lat=fileobj.variables['latitude'][:] #  shape = (2160, 4320)
+    cci_lon=fileobj.variables['longitude'][:] #  shape = (2160, 4320)
+    fileobj.close()
+   else:
+    cci=[];cci_lat=[];cci_lon=[]
+   return cci,cci_lat,cci_lon
+
+## Open GlobColour nc file
+def open_gc(t_res,d,gc):
+    # gc = dataset
+    # d = 'climatology_01'
+   file_names = glob.glob('/home/ci/Data/'+gc+'/'+t_res+'/binned/'+ '*'+d+'*')
+   if d[0:11] == 'climatology':
+       print 'Opening ' + file_names[0]
+       fileobj = Dataset(file_names[0])
+       GC = fileobj.variables['chlor_a'][:] #  shape = (4320, 8640)
+       #GC = np.where((GC==-32767.0) | (GC==0),np.nan,GC) # transform NAN flag to NANs
+       ISIN_lat=fileobj.variables['lat'][:] #  shape = (4320, 8640)
+       ISIN_lon=fileobj.variables['lon'][:] #  shape = (4320, 8640)
+       fileobj.close()
+       GC=GC.reshape(len(ISIN_lon),len(ISIN_lat))
+       ISIN_lat,ISIN_lon = np.meshgrid(ISIN_lon,ISIN_lat)
+
+   elif len(file_names)>0:
+       os.system('gzip -d '+file_names[0])# ---------------------------------decopmpress i file
+       fileobj = Dataset(file_names[0][0:-3])
+       os.system('gzip -1 '+file_names[0][0:-3])# ------------------------compress i file
+       gc= fileobj.variables['CHL1_mean'][:] #  shape = varies [0] =, (3724923)-binned
+       row=fileobj.variables['row'][:]
+       #center_lat=fileobj.variables['center_lat'][:]
+       #center_lon=fileobj.variables['center_lon'][:]
+       col=fileobj.variables['col'][:]
+       #lon_step=fileobj.variables['lon_step'][:] 
+       #first_row=fileobj.first_row
+       #nb_equ_bins=fileobj.nb_equ_bins
+       fileobj.close()
+       #
+       #index = row-first_row # ------------------------------------------------------------calculate lats & lons (GC-PUG, P48)
+       #lat_i = center_lat[index]#---------------------------------------------------------
+       #lon_i=center_lon[index]+col*lon_step[index]
+       
+       # calculate ISIN grid and put data on it
+       Re = 6378.145;Nlat = 4320;dr = np.pi * Re / Nlat;Delta_teta = np.pi / Nlat
+       n = np.arange(0,Nlat-1) # index n varies from 0 to Nlat -1
+       teta_n = - (np.pi/2) + n * Delta_teta + (Delta_teta/2)
+       pn = 2 * np.pi* Re * np.cos (teta_n);Nlon = np.round(pn/dr);de = pn / Nlon
+       Delta_psi = 2* np.pi/Nlon;Ntot = sum(Nlon)
+       ISIN_lon = [];ISIN_lat = [];GC = []
+       for i in xrange(Nlat-1):#i=Nlat/2   i=0   i=1 i=289
+           begin_time = time()
+           m = np.arange(0,int(Nlon[i]))
+           ISIN_lon.extend(np.round(np.rad2deg(- np.pi + m * Delta_psi[i] + Delta_psi[i]/2),8))
+           ISIN_lat.extend(np.zeros(Nlon[i])+np.rad2deg(teta_n[i]))
+           if (i==(row-1)).any():
+               data_=np.zeros(Nlon[i])*np.nan
+               data_[col[row==i]]=gc[row==i]
+               GC.extend(data_)
+               del data_
+           else:
+               GC.extend(np.zeros(Nlon[i])*np.nan)
+           print timedelta(seconds=(time() - begin_time)*(Nlat-i)) , ' to put GC ' +d+ ' data into sinusoidal grid..'
+       print('\a')
+       ISIN_lon=np.float32(ISIN_lon);ISIN_lat=np.float32(ISIN_lat);GC=np.float32(GC)
+       
+   else: GC=[];ISIN_lon=[];ISIN_lat=[]
+   return GC, ISIN_lon, ISIN_lat
+
+def open_oc(t_res,yr_d,oc='SeaWiFS'):# Mapped files
+   #yr_d = 'climatology_01'
+   file_name = glob.glob('/home/ci/Data/'+\
+   oc+'/'+t_res+'/mapped/'+ '*' + yr_d+'*')
+   
+   if yr_d[0:11] == 'climatology':
+       fileobj = Dataset(file_name[0])
+       oc = fileobj.variables['chlor_a'][:] #  shape = (4320, 8640)
+       oc = np.where((oc==-32767.0) | (oc==0),np.nan,oc) # transform NAN flag to NANs
+       lat=fileobj.variables['lat'][:] #  shape = (4320, 8640)
+       lon=fileobj.variables['lon'][:] #  shape = (4320, 8640)
+       fileobj.close()
+   
+   elif len(file_name)>0:
+       file_name=file_name[0]
+       print file_name + ' ' + yr_d
+       #i=0;file_name=seawifs_file_names[i]
+       os.system('bunzip2 '+file_name)# ---------------------------------decopmpress i file
+       hdffile = SD(file_name[0:-4], SDC.READ)
+       os.system('bzip2 -1 '+file_name[0:-4])# ------------------------compress i file
+       #hdffile.attributes()
+       #hdffile.datasets()
+       l3m_data = hdffile.select('l3m_data')
+       oc=l3m_data.get()
+       #
+       # Close file
+       l3m_data.endaccess()
+       hdffile.end()
+       del hdffile,l3m_data
+       #
+       # Calculate lat and lon
+       lat=np.zeros((oc.shape[0]), dtype=np.float32)
+       lon=np.zeros((oc.shape[1]), dtype=np.float32)
+       lat[:]=np.linspace(-90.0,90.0, num=oc.shape[0])
+       lon[:]=np.linspace(-180.,180., num=oc.shape[1])
+       lon,lat= np.meshgrid(lon,lat)
+       #
+       # replace missing values with nan
+       oc=np.where((oc==-32767.0) | (oc==0), np.nan, oc)
+       oc=np.flipud(oc)
+       #plot_map(np.log10(oc),lat,lon,'chl','cyl')
+       #oc=np.concatenate([oc[0:,np.shape(oc)[1]/2:np.shape(oc)[1]],oc[0:,0:np.shape(oc)[1]/2]],axis=1)# -------- put the pacific in the midle (mapped)
+       #plot_bin_data(oc,lat,lon)
+   else:
+       oc=[];lat=[];lon=[]
+        
+   return oc,lat,lon
+
+def joint_entropy(x,y, bins): # from matplotlib
+    #n, bins = np.histogram(y, bins)
+    # I=0, if x and y different; I=h_xy, if x=y
+    # RVI (Root Variation of information)
+    n_x, bins_x = np.histogram(x, bins)
+    p_x = 1.*n_x/len(x)
+    n_y, bins_y = np.histogram(y, bins)
+    p_y = 1.*n_y/len(y)
+    n_xy = np.min((n_x,n_y),axis=0)
+    p_xy = 1. * n_xy / max(len(x),len(y))
+    
+    h_xy = -1. * (sum(p_xy[p_xy!=0] * np.log2(p_xy[p_xy!=0])))
+    I_xy = sum(p_xy[p_xy!=0] * np.log2(p_xy[p_xy!=0] / 
+                                       (p_x * p_y)[p_xy!=0]))
+    NMI = I_xy/np.sqrt(h_x * h_y)
+    #RVI = np.sqrt((h_x * h_x) + (h_y * h_y)\
+    #    - 2 * h_x * h_y * (I_xy/(h_x * h_y)))
+    return h_xy,I_xy,NMI
+
+def entropy(y, bins=50): # from matplotlib
+    # y=rand(1000,1000);bins=size(y)
+    n, bins = np.histogram(y, bins)
+    #n = n.astype(np.float_)
+    n = np.take(n, np.nonzero(n)[0]) # get the positive
+    #p = np.divide(n, len(y))
+    p = 1.*n/len(y)
+    #delta = bins[1] - bins[0]
+    #S = -1. * np.sum(p * np.log2(p)) + np.log(delta)
+    h = -1. * sum(p * np.log2(p))
+    return h
+
+def how_many_nans_in_statistics(dataset,year_1,month_1,day_1,year_2,month_2,day_2,t_res,cci):
+    #dataset='SeaWiFS'
+    #year_1=1997;month_1=9;day_1=1;year_2=2013;month_2=12;day_2=31
+    #t_res='monthly';cci='CCI-V0.95'
+    slope,intercept,r_value,p_value,std_err,rms_rel,bias_rel,mean_ratio,\
+    mean_p_dif,median_p_dif,range_x,range_y,mean_x,mean_y,ratio_of_means,\
+    std_x,std_y,ratio_of_std,N,log_mean_x,log_mean_y,h_x,h_y,h_xy,I_xy,NMI,\
+    min_x,min_y,max_x,max_y,p1_x,p5_x,p95_x,p99_x,p1_y,p5_y,p95_y,p99_y,rms_u\
+    =load_vars(dataset,t_res,year_1,month_1,day_1,year_2,month_2,day_2,cci)
+    print dataset + ' ' + str(sum(np.isnan(r_value)))
+
+def reset_statistics(dataset,t_res,year_1,month_1,day_1,year_2,month_2,day_2,cci,anomal ='no'):
+    ### !Reset stats to Zero
+    # !running this will delete all the values already calculated
+    # cci = 'CCI-V0.9'
+    # dataset = 'SeaWiFS'
+    dates=time_line(t_res,datetime(year_1,month_1,day_1),datetime(year_2,month_2,day_2))
+
+    slope=np.zeros((np.shape(dates)[0]))*np.nan
+    intercept=np.zeros((np.shape(dates)[0]))*np.nan;r_value=np.zeros((np.shape(dates)[0]))*np.nan;p_value=np.zeros((np.shape(dates)[0]))*np.nan;std_err=np.zeros((np.shape(dates)[0]))*np.nan;rms_rel=np.zeros((np.shape(dates)[0]))*np.nan
+    bias_rel=np.zeros((np.shape(dates)[0]))*np.nan;mean_ratio=np.zeros((np.shape(dates)[0]))*np.nan;mean_p_dif=np.zeros((np.shape(dates)[0]))*np.nan;median_p_dif=np.zeros((np.shape(dates)[0]))*np.nan
+    range_x=np.zeros((np.shape(dates)[0]))*np.nan;range_y=np.zeros((np.shape(dates)[0]))*np.nan;mean_x=np.zeros((np.shape(dates)[0]))*np.nan;mean_y=np.zeros((np.shape(dates)[0]))*np.nan;ratio_of_means=np.zeros((np.shape(dates)[0]))*np.nan
+    std_x=np.zeros((np.shape(dates)[0]))*np.nan;std_y=np.zeros((np.shape(dates)[0]))*np.nan;ratio_of_std=np.zeros((np.shape(dates)[0]))*np.nan;N=np.zeros((np.shape(dates)[0]))*np.nan;log_mean_x=np.zeros((np.shape(dates)[0]))*np.nan;
+    log_mean_y=np.zeros((np.shape(dates)[0]))*np.nan;h_x=np.zeros((np.shape(dates)[0]))*np.nan;h_y=np.zeros((np.shape(dates)[0]))*np.nan;h_xy=np.zeros((np.shape(dates)[0]))*np.nan;I_xy=np.zeros((np.shape(dates)[0]))*np.nan;NMI=np.zeros((np.shape(dates)[0]))*np.nan;
+    min_x=np.zeros((np.shape(dates)[0]))*np.nan;min_y=np.zeros((np.shape(dates)[0]))*np.nan;max_x=np.zeros((np.shape(dates)[0]))*np.nan;max_y=np.zeros((np.shape(dates)[0]))*np.nan;p1_y=np.zeros((np.shape(dates)[0]))*np.nan;p5_y=np.zeros((np.shape(dates)[0]))*np.nan;
+    p95_y=np.zeros((np.shape(dates)[0]))*np.nan;p99_y=np.zeros((np.shape(dates)[0]))*np.nan;p1_x=np.zeros((np.shape(dates)[0]))*np.nan;p5_x=np.zeros((np.shape(dates)[0]))*np.nan;p95_x=np.zeros((np.shape(dates)[0]))*np.nan;p99_x=np.zeros((np.shape(dates)[0]))*np.nan;
+    rms_u=np.zeros((np.shape(dates)[0]))*np.nan;
+    if anomal =='yes':
+        np.savez('/home/ci/python/results/Comparing_datasets/'
+             + cci + '/stats_in_time/' + dataset + '_comparison_stats_' + t_res + '_'
+             + dates[0].strftime('%Y%m%d') + '_' + dates[-1].strftime('%Y%m%d') 
+             + '_anomalies.npy',
+             slope, intercept, r_value, p_value, std_err,rms_rel,bias_rel,mean_ratio,\
+             mean_p_dif,median_p_dif,range_x,range_y,mean_x,mean_y,ratio_of_means,\
+             std_x,std_y,ratio_of_std,N,log_mean_x,log_mean_y,h_x,h_y,h_xy,I_xy,NMI,\
+             min_x,min_y,max_x,max_y,p1_x,p5_x,p95_x,p99_x,p1_y,p5_y,p95_y,p99_y,rms_u)
+    else:
+        np.savez('/home/ci/python/results/Comparing_datasets/'
+             + cci + '/stats_in_time/' + dataset + '_comparison_stats_' + t_res + '_'
+             + dates[0].strftime('%Y%m%d') + '_' + dates[-1].strftime('%Y%m%d') 
+             + '.npy',
+             slope, intercept, r_value, p_value, std_err,rms_rel,bias_rel,mean_ratio,\
+             mean_p_dif,median_p_dif,range_x,range_y,mean_x,mean_y,ratio_of_means,\
+             std_x,std_y,ratio_of_std,N,log_mean_x,log_mean_y,h_x,h_y,h_xy,I_xy,NMI,\
+             min_x,min_y,max_x,max_y,p1_x,p5_x,p95_x,p99_x,p1_y,p5_y,p95_y,p99_y,rms_u)
+
+def load_vars(dataset,t_res,year_1,month_1,day_1,year_2,month_2,day_2,cci,anomalies = 'no'):
+    # dataset = 'SeaWiFS';t_res='monthly';year_1=1997;month_1=9;day_1=1;year_2=2013;
+    # month_2=12;day_2=31;cci='CCI-V1.0'
+    dates=time_line(t_res,datetime(year_1,month_1,day_1),datetime(year_2,month_2,day_2))
+    if anomalies == 'yes':
+        npzfile=np.load('python/results/Comparing_datasets/' 
+                    + cci + '/stats_in_time/' + dataset + '_comparison_stats_' 
+                    +t_res + '_' + dates[0].strftime('%Y%m%d') + '_' + dates[-1].strftime('%Y%m%d') 
+                    + '_anomalies.npy.npz')
+    else:
+        npzfile=np.load('python/results/Comparing_datasets/' 
+                    + cci + '/stats_in_time/' + dataset + '_comparison_stats_' 
+                    +t_res + '_' + dates[0].strftime('%Y%m%d') + '_' + dates[-1].strftime('%Y%m%d') 
+                    + '.npy.npz')
+
+    #npzfile.keys()
+    slope=npzfile['arr_0']
+    intercept=npzfile['arr_1']
+    r_value=npzfile['arr_2']
+    p_value=npzfile['arr_3']
+    std_err=npzfile['arr_4']
+    rms_rel=npzfile['arr_5']
+    bias_rel=npzfile['arr_6']
+    mean_ratio=npzfile['arr_7']
+    mean_p_dif=npzfile['arr_8']
+    median_p_dif=npzfile['arr_9']
+    range_x=npzfile['arr_10']
+    range_y=npzfile['arr_11']
+    mean_x=npzfile['arr_12']
+    mean_y=npzfile['arr_13']
+    ratio_of_means=npzfile['arr_14']
+    std_x=npzfile['arr_15']
+    std_y=npzfile['arr_16']
+    ratio_of_std=npzfile['arr_17']
+    N=npzfile['arr_18']
+    log_mean_x=npzfile['arr_19']
+    log_mean_y=npzfile['arr_20']
+    h_x = npzfile['arr_21']
+    h_y = npzfile['arr_22']
+    h_xy = npzfile['arr_23']
+    I_xy = npzfile['arr_24']
+    NMI = npzfile['arr_25']
+    min_x = npzfile['arr_26']
+    min_y = npzfile['arr_27']
+    max_x = npzfile['arr_28']
+    max_y = npzfile['arr_29']
+    p1_x = npzfile['arr_30']
+    p5_x = npzfile['arr_31']
+    p95_x = npzfile['arr_32']
+    p99_x = npzfile['arr_33']
+    p1_y = npzfile['arr_34']
+    p5_y = npzfile['arr_35']
+    p95_y = npzfile['arr_36']
+    p99_y = npzfile['arr_37']
+    rms_u = npzfile['arr_38']
+    
+    return slope, intercept, r_value, p_value, std_err,rms_rel,bias_rel,\
+    mean_ratio,mean_p_dif,median_p_dif,range_x,range_y,mean_x,mean_y,ratio_of_means,\
+    std_x,std_y,ratio_of_std,N,log_mean_x,log_mean_y,h_x,h_y,h_xy,I_xy,NMI,\
+    min_x,min_y,max_x,max_y,p1_x,p5_x,p95_x,p99_x,p1_y,p5_y,p95_y,p99_y,rms_u
+
+## make all FVR(p.15-16) and IOCCG(p.41) suggested statistics
+def estatisticas(x,y,dataset_name1,dataset_name2,date, anomalies = 'no'):
+   # x=data1;y=data2
+   # dataset_name1='CCI-V0'
+   # dataset_name2='SeaWiFS'
+   # date='2006-01'
+   # anomalies = 'yes'
+   #
+   # check compability (same locations of data in both datasets)
+   print ('Checking compability (same locations of data in both datasets)..')
+   index=np.invert(np.isnan(x)) & np.invert(np.isnan(y))#sum(index)
+   x=x[index];y=y[index]
+
+   # Calculating statistics
+   if anomalies == 'yes':
+      slope, intercept, r_value, p_value, std_err,rms_rel,bias_rel,mean_ratio,mean_p_dif,median_p_dif,\
+        range_x,range_y,mean_x,mean_y,ratio_of_means,std_x,std_y,ratio_of_std,N,log_mean_x,log_mean_y,\
+        min_x,min_y,max_x,max_y,p1_x,p5_x,p95_x,p99_x,p1_y,p5_y,p95_y,p99_y,rms_u = calculate_stats_linear(x,y)
+   else:
+      slope, intercept, r_value, p_value, std_err,rms_rel,bias_rel,mean_ratio,mean_p_dif,median_p_dif,\
+        range_x,range_y,mean_x,mean_y,ratio_of_means,std_x,std_y,ratio_of_std,N,log_mean_x,log_mean_y,\
+        min_x,min_y,max_x,max_y,p1_x,p5_x,p95_x,p99_x,p1_y,p5_y,p95_y,p99_y,rms_u = calculate_stats_log(x,y)
+
+   ## plot_estatisticas
+   #pl.ion();pl.show()
+   fig=pl.figure(33);pl.rc('text',usetex=True)
+   fig.suptitle(date)
+   
+   ######### TOP plot (histograms) #########################
+   h1=pl.subplot(2,1,1)
+   if anomalies == 'yes':
+       n_x, bins_x, patches_x = pl.hist(x, np.linspace(-.15,.15),histtype='step',color=None)# std of CCI-v1 1997-09 = 0.5 lims = 3*std (99.73% of the values)
+       n_y, bins_y, patches_y = pl.hist(y, np.linspace(-.15,.15),histtype='step',color=None)
+   else: 
+       n_x, bins_x, patches_x = pl.hist(np.log10(x), np.linspace(-2,2),histtype='step',color=None)
+       n_y, bins_y, patches_y = pl.hist(np.log10(y), np.linspace(-2,2),histtype='step',color=None)   
+
+   if len(date)==7: pl.ylim([0,2400000])
+   else: pl.ylim([0,150000])
+   if anomalies == 'yes': pl.xlim([-.15,.15])
+   else: pl.xlim([np.log10(0.01),np.log10(100)])
+   pl.grid()
+   if anomalies == 'no':h1.set_xticks(tuple(list(np.log10(np.arange(.01,.1,.01)))+list(np.log10(np.arange(.1,1,.1)))+list(np.log10(np.arange(1,10,1)))+list(np.log10(np.arange(10,100,10)))))
+   h1.set_xticklabels([])
+   pl.title(\
+    '$'+'\\bar{x}'+ str(round(mean_x,3)) + \
+    '$,  $\\bar{y}'+ str(round(mean_y,3)) + \
+    '$,  $\\bar{x}_{log}' + str(round(log_mean_x,3)) + \
+    '$,  $\\bar{y}_{log}' + str(round(log_mean_y,3)) + \
+    '$,  $\sigma_x'+ str(round(std_x,3)) + \
+    '$,  $\sigma_y'+ str(round(std_y,3)) + \
+    '$,  $Range_x'+ str(round(range_x,3)) + \
+    '$,  $Range_y'+ str(round(range_y,3)) + \
+    '$') 
+   pl.ylabel('$N$')
+   pl.legend( ('$'+dataset_name1+'$', '$'+dataset_name2+'$'),loc=1) 
+
+   ########## bottom plot #######################
+   h2=pl.subplot(2,1,2);pl.rc('text',usetex=True)
+   pl.plot(bins_x[0:-1],n_x-n_y)
+   pl.plot(bins_x[0:-1],np.zeros(len(n_x)),'r')
+   if len(date)==7: pl.ylim([6*-200000,6*150000])
+   else:pl.ylim([-30000,30000])
+   if anomalies == 'yes': pl.xlim([-.15,.15])
+   else: pl.xlim([np.log10(0.01),np.log10(100)])
+   pl.grid()
+   if anomalies == 'no':
+        h2.set_xticks(tuple(list(np.log10(np.arange(.01,.1,.01)))+list(np.log10(np.arange(.1,1,.1)))+list(np.log10(np.arange(1,10,1)))+list(np.log10(np.arange(10,100,10)))))
+        h2.set_xticklabels([0.01,'',0.03,'','','','','','',.1,'',.3,'','','','','','',1,'',3,'','','','','','',10,'',30,'','','','','','',100])
+   pl.xlabel('Chl$[mg.m^{-3}]$');pl.ylabel('$\Delta(N_x,N_y)$')
+   pl.title(\
+    '$'+'\phi_{(x,y)}'+ str(round(mean_ratio,3)) + \
+    '$,   $\\bar{x}$:$\\bar{y}$ $'+str(round(ratio_of_means,3)) + \
+    '$,   $\sigma_x$:$\sigma_y$ $'+str(round(ratio_of_std,3)) + \
+    '$,   $\\bar{x}_{\%(x,y)}'+str(round(mean_p_dif,3)) +'\%' + \
+    '$,   $\\tilde{x}_{\%(x,y)}'+str(round(median_p_dif,3))+'\%' + \
+    '$,   $N'+str(x.shape[0]) + \
+    '$')
+    
+   #############################################
+   # 2D hist (scatter)
+   fig=pl.figure();pl.rc('text',usetex=True)
+   fig.suptitle(date)
+   #pl.scatter(x,y,c='k',s=1,marker='s',edgecolors='none')
+   #pl.plot([-40,80],[intercept + slope*-40,intercept + slope*80], color=[0,0,0])
+   #pl.plot([-40,80], [-40,80], 'k--', lw=1)
+
+   if len(date)==7: vamx_=np.log10(100000)
+   else: vamx_=np.log10(10000)
+   if anomalies == 'yes':
+        #x=data1;y=data2; index=np.invert(np.isnan(x)) & np.invert(np.isnan(y)); x=x[index];y=y[index]
+        n = 20 # 2 for optimum results
+        x = np.where(x>n,nan,x);x = np.where(x<-n,nan,x)
+        y = np.where(y>n,nan,y);y = np.where(y<-n,nan,y)
+        index=np.invert(np.isnan(x)) & np.invert(np.isnan(y))#sum(index)
+        x=x[index];y=y[index]
+        #slope, intercept, r_value, p_value, std_err = stats.linregress(x,y); print 'n = ' + str(n)+' m = '+str(slope) + ' r = ' + str(r_value)
+
+        pl.hexbin(x,y,bins='log',cmap='CMRmap_r')#,gridsize=1000,vmin=0.0,vmax=vamx_)#CMRmap_r, Accent, bone_r, gist_earth_r, gist_heat_r, gist_ncar_r, gist_stern_r, GnBu, hot_r, 'Greys'
+   else: 
+        pl.hexbin(np.log10(x),np.log10(y),bins='log',cmap='Greys',vmin=0.0,vmax=vamx_)#bone_r, gist_earth_r, gist_heat_r, gist_ncar_r, gist_stern_r, GnBu, hot_r, 
+
+   #pl.plot(np.log10(x),intercept_ + slope_*np.log10(x), color=[0,0,0])
+   if anomalies == 'yes':
+        pl.plot([-n,n],
+         [intercept + slope*-n,intercept + slope*n], color=[0,0,0])
+        pl.plot([-n,n], [-n,n], 'k--', lw=1)
+        #pl.xlim([-n, n])
+        #pl.ylim([-n, n])
+   else:
+        pl.plot([np.log10(.01), np.log10(100)],[intercept + slope*np.log10(.01),intercept + slope*np.log10(100)], color=[0,0,0])
+        pl.plot([np.log10(.01), np.log10(100)], [np.log10(.01), np.log10(100)], 'b-', lw=1)
+        pl.xlim([np.log10(.01), np.log10(100)])
+        pl.ylim([np.log10(.01), np.log10(100)])
+   pl.grid();
+   pl.xlabel('$Chl$ $[mg.m^{-3}]$ $('+dataset_name1+')'+'$')
+   pl.ylabel('$Chl$ $[mg.m^{-3}]$ $('+dataset_name2+')'+'$')
+   if anomalies == 'no':
+       pl.xticks(tuple(list(np.log10(np.arange(.01,.1,.01)))+list(np.log10(np.arange(.1,1,.1)))+list(np.log10(np.arange(1,10,1)))+list(np.log10(np.arange(10,100,10)))),\
+        [0.01,'',0.03,'','','','','','',.1,'',.3,'','','','','','',1,'',3,'','','','','','',10,'',30,'','','','','','',100])
+       pl.yticks(tuple(list(np.log10(np.arange(.01,.1,.01)))+list(np.log10(np.arange(.1,1,.1)))+list(np.log10(np.arange(1,10,1)))+list(np.log10(np.arange(10,100,10)))),\
+        [0.01,'',0.03,'','','','','','',.1,'',.3,'','','','','','',1,'',3,'','','','','','',10,'',30,'','','','','','',100])
+
+   cb = pl.colorbar();cb.set_label('$N$')
+   cb.set_ticks(np.log10([1,2,3,4,5,6,7,8,9,10,20,30,40,50,60,70,80,90,100,200,
+    300,400,500,600,700,800,900,1000,2000,3000,4000,5000,6000,7000,8000,9000,
+    10000,20000,30000,40000,50000,60000,70000,80000,90000,100000,200000,300000,
+    400000,500000,600000,700000,800000,900000,1000000,2000000,3000000,4000000,
+    5000000,6000000,7000000,8000000,9000000,10000000]))
+   cb.set_ticklabels([0,'','','','','','','','','',10,'','','','','','','','',
+    100,'','','','','','','','',1000,'','','','','','','','',10000,'','','','',
+    '','','','',100000,'','','','','','','','',1000000,'','','','','','','','',
+    10000000])
+   
+   pl.title('$RMS$ $'+ str(round(rms_rel,2)) +'$,   $Bias'+str(round(bias_rel,2)) + \
+   '$,   $r^2$ $'+ str(round(r_value**2,2)) + '$,   $p$ $'+ str(round(p_value,3)) +\
+   '$,   $m$ $' + str(round(slope,2)) +'$,   $b$ $'+str(round(intercept,2))+\
+   #'$   $r^{2}_{log}$ $'+ str(round(r_value_**2,2)) +'$   $p_{log}$ $'+ str(round(p_value_,3)) +'$   $m_{log}$ $'+ str(round(slope_,3)) +\
+   '$')#   $b_{log}$ $'+ str(round(intercept_,3)) +'$')
+
+   # Mutual information diagram (Correa and Lindstrom IJUQ 2013)
+   #Hx=entropy(x)
+   #Hy=entropy(y)
+   #n_x = np.take(n_x, np.nonzero(n_x)[0])
+   p_x = 1.*n_x/len(x)
+   h_x = -(sum(p_x[p_x>0] * np.log2(p_x[p_x>0])))
+   #n_y = np.take(n_y, np.nonzero(n_y)[0])
+   p_y = 1.*n_y/len(y)
+   h_y = -(sum(p_y[p_y>0] * np.log2(p_y[p_y>0])))
+   n_xy = np.min((n_x,n_y),axis=0)
+   p_xy = 1.*n_xy/len(x)
+
+   if sum(p_xy)==0: h_xy=0;I_xy=0# Joint entropy and mutual information
+   else: 
+       h_xy = -(sum(p_xy[p_xy>0] * np.log2(p_xy[p_xy>0])))
+       I_xy = sum(p_xy[p_xy>0] * np.log2(p_xy[p_xy>0] / (p_x * p_y)[p_xy>0]))
+       #RVI = np.sqrt((h_x * h_x) + (h_y * h_y) - (2 * h_x * h_y * (I_xy/(h_x * h_y))))
+       NMI = I_xy/np.sqrt(h_x * h_y)
+
+   return slope, intercept, r_value, p_value, std_err,rms_rel,bias_rel,mean_ratio,mean_p_dif,median_p_dif,\
+   range_x,range_y,mean_x,mean_y,ratio_of_means,std_x,std_y,ratio_of_std,N,log_mean_x,log_mean_y,h_x,h_y,\
+   h_xy,I_xy,NMI,min_x,min_y,max_x,max_y,p1_x,p5_x,p95_x,p99_x,p1_y,p5_y,p95_y,p99_y,rms_u
+
+def calculate_stats_log(x,y):
+   # Calculating statistics
+   #slope, intercept, r_value, p_value, std_err = stats.linregress(x,y) # not logged #-----------(FVR,IOCCG-r2)
+   slope, intercept, r_value, p_value, std_err = stats.linregress(np.log10(x),np.log10(y)) #-----------(FVR,IOCCG-r2)
+   rms_rel=np.sqrt(np.sum((np.log10(y)-np.log10(x))**2)/len(x))#--------------------------------------(FVR,IOCCG) scatter
+   bias_rel = np.sum(np.log10(y)-np.log10(x))/len(x)#---------------------------------------------------------(FVR,IOCCG) scatter
+   #rms=np.sqrt(np.sum((y-x)**2)/len(x))#--- Not for Chl#--------------------------------------------------(FVR)
+   #bias = np.sum(y-x)/len(x)#---------------------- Not for Chl#--------------------------------------------------(FVR)
+   mean_ratio = np.sum(y/x)/len(x) # y extimates over x #---------------------------------------------------(FVR,IOCCG)2 hist
+   mean_p_dif=np.sum(np.abs(y-x)/x)/len(x)*100 #--------------------------------------------------------------(FVR) 2hist
+   median_p_dif=np.median(np.abs(y-x)/x)*100 #----------------------------------------------------------------(FVR) 2hist
+   range_x=np.ptp(x);range_y=np.ptp(y) #--------------------------------------------------------------------------(FVR) 1hist
+   mean_x=x.mean()#-----------------------------------------------------------------------------------------------------------(OC?) 1hist
+   mean_y=y.mean()#-----------------------------------------------------------------------------------------------------------(OC?) 1hist
+   log_mean_x=10**(np.mean(np.log10(x)))
+   log_mean_y=10**(np.mean(np.log10(y)))
+
+   rms_u=np.sqrt(np.sum((
+                (np.log10(y)-np.log10(log_mean_y))-
+                (np.log10(x)-np.log10(log_mean_x)))**2)/len(x))#-----Djavidnia et al 2010
+   ratio_of_means=log_mean_y/log_mean_x#-------------------------------------------------------------------------------------(OC?) 2hist
+   std_x=x.std()#-------------------------------------------------------------------------------------------------------------------(OC?) 1hist
+   std_y=y.std()#-------------------------------------------------------------------------------------------------------------------(OC?) 1hist
+   ratio_of_std= std_y/std_x # y extimates over x#----------------------------------------------------------------(OC?) 2hist
+   min_x = x.min()
+   min_y = y.min()
+   max_x = x.max()
+   max_y = y.max()
+   p1_x = np.percentile(x,1)
+   p5_x = np.percentile(x,5)
+   p95_x = np.percentile(x,95)
+   p99_x = np.percentile(x,99)
+   p1_y = np.percentile(y,1)
+   p5_y = np.percentile(y,5)
+   p95_y = np.percentile(y,95)
+   p99_y = np.percentile(y,99)
+
+   # returning statistcs
+   N = x.size
+   
+   return slope, intercept, r_value, p_value, std_err,rms_rel,bias_rel,mean_ratio,mean_p_dif,median_p_dif,\
+   range_x,range_y,mean_x,mean_y,ratio_of_means,std_x,std_y,ratio_of_std,N,log_mean_x,log_mean_y,\
+   min_x,min_y,max_x,max_y,p1_x,p5_x,p95_x,p99_x,p1_y,p5_y,p95_y,p99_y,rms_u
+
+def calculate_stats_linear(x,y):
+   # Calculating statistics
+   slope, intercept, r_value, p_value, std_err = stats.linregress(x,y) # not logged #-----------(FVR,IOCCG-r2)
+   #slope, intercept, r_value, p_value, std_err = stats.linregress(np.log10(x),np.log10(y)) #-----------(FVR,IOCCG-r2)
+   #rms_rel=np.sqrt(np.sum((np.log10(y)-np.log10(x))**2)/len(x))#--------------------------------------(FVR,IOCCG) scatter
+   #bias_rel = np.sum(np.log10(y)-np.log10(x))/len(x)#---------------------------------------------------------(FVR,IOCCG) scatter
+   rms=np.sqrt(np.sum((y-x)**2)/len(x))#--- Not for Chl#--------------------------------------------------(FVR)
+   bias = np.sum(y-x)/len(x)#---------------------- Not for Chl#--------------------------------------------------(FVR)
+   mean_ratio = np.sum(y/x)/len(x) # y extimates over x #---------------------------------------------------(FVR,IOCCG)2 hist
+   mean_p_dif=np.sum(np.abs(y-x)/x)/len(x)*100 #--------------------------------------------------------------(FVR) 2hist
+   median_p_dif=np.median(np.abs(y-x)/x)*100 #----------------------------------------------------------------(FVR) 2hist
+   range_x=np.ptp(x);range_y=np.ptp(y) #--------------------------------------------------------------------------(FVR) 1hist
+   mean_x=x.mean()#-----------------------------------------------------------------------------------------------------------(OC?) 1hist
+   mean_y=y.mean()#-----------------------------------------------------------------------------------------------------------(OC?) 1hist
+   log_mean_x=10**(np.mean(np.log10(x)))
+   log_mean_y=10**(np.mean(np.log10(y)))
+
+   #rms_u_log=np.sqrt(np.sum((
+   #             (np.log10(y)-np.log10(log_mean_y))-
+   #             (np.log10(x)-np.log10(log_mean_x)))**2)/len(x))#-----Djavidnia et al 2010
+   rms_u=np.sqrt(np.sum((
+                (y-mean_y)-
+                (x-mean_x))**2)/len(x))#----- adapted from Djavidnia et al 2010
+
+   ratio_of_means=mean_y/mean_x#-------------------------------------------------------------------------------------(OC?) 2hist
+   std_x=x.std()#-------------------------------------------------------------------------------------------------------------------(OC?) 1hist
+   std_y=y.std()#-------------------------------------------------------------------------------------------------------------------(OC?) 1hist
+   ratio_of_std= std_y/std_x # y extimates over x#----------------------------------------------------------------(OC?) 2hist
+   min_x = x.min()
+   min_y = y.min()
+   max_x = x.max()
+   max_y = y.max()
+   p1_x = np.percentile(x,1)
+   p5_x = np.percentile(x,5)
+   p95_x = np.percentile(x,95)
+   p99_x = np.percentile(x,99)
+   p1_y = np.percentile(y,1)
+   p5_y = np.percentile(y,5)
+   p95_y = np.percentile(y,95)
+   p99_y = np.percentile(y,99)
+
+   # returning statistcs
+   N = x.size
+   
+   return slope, intercept, r_value, p_value, std_err,rms,bias,mean_ratio,mean_p_dif,median_p_dif,\
+   range_x,range_y,mean_x,mean_y,ratio_of_means,std_x,std_y,ratio_of_std,N,log_mean_x,log_mean_y,\
+   min_x,min_y,max_x,max_y,p1_x,p5_x,p95_x,p99_x,p1_y,p5_y,p95_y,p99_y,rms_u
+
+
+# Knuth-Morris-Pratt string matching
+# David Eppstein, UC Irvine, 1 Mar 2002
+
+#from __future__ import generators
+
+def KnuthMorrisPratt(text, pattern):
+
+    '''Yields all starting positions of copies of the pattern in the text.
+Calling conventions are similar to string.find, but its arguments can be
+lists or iterators, not just strings, it returns all matches, not just
+the first one, and it does not need the whole text in memory at once.
+Whenever it yields, it will have read the text exactly up to and including
+the match that caused the yield.'''
+
+    # allow indexing into pattern and protect against change during yield
+    pattern = list(pattern)
+
+    # build table of shift amounts
+    shifts = [1] * (len(pattern) + 1)
+    shift = 1
+    for pos in range(len(pattern)):
+        while shift <= pos and pattern[pos] != pattern[pos-shift]:
+            shift += shifts[pos-shift]
+        shifts[pos+1] = shift
+
+    # do the actual search
+    startPos = 0
+    matchLen = 0
+    for c in text:
+        while matchLen == len(pattern) or \
+              matchLen >= 0 and pattern[matchLen] != c:
+            startPos += shifts[matchLen]
+            matchLen -= shifts[matchLen]
+        matchLen += 1
+        if matchLen == len(pattern):
+            yield startPos
+    #return startPos
